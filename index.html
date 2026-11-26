@@ -4619,6 +4619,18 @@ const App = (() => {
     players.forEach(p => { p.score = 0; });
     savePlayers();
     updateTopbar();
+    broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
+    SoundFX.pop();
+  }
+
+  function resetPlayerScore(playerId) {
+    const p = players.find(x => x.id === playerId);
+    if (!p) return;
+    p.score = 0;
+    savePlayers();
+    updateTopbar();
+    broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
+    SoundFX.pop();
   }
 
   function getStage() {
@@ -4817,7 +4829,9 @@ const App = (() => {
         <div class="card stack-sm">
           <div class="row-between">
             <h3>👨‍👩‍👧‍👦 Players at the Table (${players.length}${remoteCount ? ` · ${remoteCount} on 📱` : ''})</h3>
-            <span class="xs muted">Replace demo names or let guests scan QR to auto-add!</span>
+            <div class="row">
+              ${sorted[0]?.score > 0 ? `<button class="btn btn-sm" id="hub-reset-scores" style="color:var(--cranberry);border-color:var(--cranberry);">↺ Reset Scores</button>` : `<span class="xs muted">Replace demo names or let guests scan QR to auto-add!</span>`}
+            </div>
           </div>
           <div class="roster-bar">
             ${players.map(p => `
@@ -4867,7 +4881,10 @@ const App = (() => {
               <strong>👑 Current Thanksgiving Leader: ${sorted[0].avatar} ${esc(sorted[0].name)}</strong>
               <span class="muted small"> with ${sorted[0].score} pts</span>
             </div>
-            <button class="btn btn-sm" id="hub-view-lb">Full Standings</button>
+            <div class="row">
+              <button class="btn btn-sm" id="hub-reset-scores-2">↺ Reset Scores</button>
+              <button class="btn btn-sm" id="hub-view-lb">Full Standings</button>
+            </div>
           </div>
         ` : ''}
       </div>`;
@@ -4877,6 +4894,11 @@ const App = (() => {
     document.getElementById('qs-full-guide').onclick = openGuideModal;
     const lb = document.getElementById('hub-view-lb');
     if (lb) lb.onclick = openLeaderboardModal;
+    const doHubReset = () => { resetScores(); renderHub(); };
+    const r1 = document.getElementById('hub-reset-scores');
+    if (r1) r1.onclick = doHubReset;
+    const r2 = document.getElementById('hub-reset-scores-2');
+    if (r2) r2.onclick = doHubReset;
 
     root.querySelectorAll('[data-rm]').forEach(btn => {
       btn.onclick = () => { removePlayer(btn.dataset.rm); renderHub(); };
@@ -5126,9 +5148,11 @@ const App = (() => {
     renderSim();
   }
 
-  function openLeaderboardModal() {
+  function openLeaderboardModal(justReset) {
+    const showResetNotice = justReset === true;
     const m = document.getElementById('modal-root');
     const sorted = [...players].sort((a, b) => b.score - a.score);
+    const anyScore = sorted.some(p => p.score > 0);
     m.innerHTML = `
       <div class="modal-backdrop" id="modal-bg">
         <div class="modal stack">
@@ -5136,23 +5160,27 @@ const App = (() => {
             <h2>🏆 Family Leaderboard</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
+          ${showResetNotice ? `<div class="card-warm small center" style="color:var(--sage);font-weight:700;">✅ All scores reset to 0 — ready for a fresh game!</div>` : ''}
           <div class="stack-sm">
             ${sorted.map((p, i) => `
               <div class="card-warm row-between" style="padding:12px 14px;">
                 <div class="row">
-                  <strong class="mono" style="width:26px;">${i === 0 ? '👑' : `#${i + 1}`}</strong>
+                  <strong class="mono" style="width:26px;">${i === 0 && p.score > 0 ? '👑' : `#${i + 1}`}</strong>
                   <span style="font-size:1.35rem;">${p.avatar}</span>
                   <div>
                     <strong>${esc(p.name)}</strong>
                     <div class="xs muted">${p.ageGroup === 'kid' ? 'Kid' : p.ageGroup === 'teen' ? 'Teen' : 'Adult'}</div>
                   </div>
                 </div>
-                <strong class="mono" style="font-size:1.2rem;color:var(--pumpkin);">${p.score} pts</strong>
+                <div class="row" style="gap:8px;">
+                  <strong class="mono" style="font-size:1.2rem;color:var(--pumpkin);">${p.score} pts</strong>
+                  ${p.score > 0 ? `<button class="btn btn-sm" data-zero="${p.id}" title="Zero out ${esc(p.name)}'s score">↺ 0</button>` : ''}
+                </div>
               </div>
             `).join('')}
           </div>
           <div class="row-between">
-            <button class="btn btn-sm" id="lb-reset">Reset Scores</button>
+            <button class="btn btn-danger" id="lb-reset" ${!anyScore ? 'disabled' : ''}>↺ Reset All Scores to 0</button>
             <button class="btn btn-primary" id="lb-done">Done</button>
           </div>
         </div>
@@ -5161,9 +5189,16 @@ const App = (() => {
     document.getElementById('modal-close').onclick = closeModal;
     document.getElementById('lb-done').onclick = closeModal;
     document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
+    m.querySelectorAll('[data-zero]').forEach(btn => {
+      btn.onclick = () => {
+        resetPlayerScore(btn.dataset.zero);
+        openLeaderboardModal(false);
+        if (!currentGameKey) renderHub();
+      };
+    });
     document.getElementById('lb-reset').onclick = () => {
       resetScores();
-      openLeaderboardModal();
+      openLeaderboardModal(true);
       if (!currentGameKey) renderHub();
     };
   }

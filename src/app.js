@@ -7,6 +7,22 @@ const App = (() => {
 
   const STORAGE_PLAYERS = 'tg26_players_v1';
   const STORAGE_ROOM = 'tg26_room_v1';
+  const STORAGE_ADMIN_PIN = 'tg26_admin_pin_v1';
+  const DEFAULT_ADMIN_PIN = '2026';
+
+  function getAdminPin() {
+    try {
+      const saved = localStorage.getItem(STORAGE_ADMIN_PIN);
+      if (saved && saved.trim()) return saved.trim();
+    } catch (_) {}
+    return DEFAULT_ADMIN_PIN;
+  }
+
+  function setAdminPin(pin) {
+    const clean = String(pin || '').trim();
+    if (!clean) return;
+    try { localStorage.setItem(STORAGE_ADMIN_PIN, clean); } catch (_) {}
+  }
 
   let players = loadPlayers();
   let currentGameKey = null; // null = Hub
@@ -293,7 +309,7 @@ const App = (() => {
           <div class="row-between">
             <h3>👨‍👩‍👧‍👦 Players at the Table (${players.length}${remoteCount ? ` · ${remoteCount} on 📱` : ''})</h3>
             <div class="row">
-              ${sorted[0]?.score > 0 ? `<button class="btn btn-sm" id="hub-reset-scores" style="color:var(--cranberry);border-color:var(--cranberry);">↺ Reset Scores</button>` : `<span class="xs muted">Replace demo names or let guests scan QR to auto-add!</span>`}
+              ${sorted[0]?.score > 0 ? `<button class="btn btn-sm" id="hub-reset-scores" style="color:var(--cranberry);border-color:var(--cranberry);">🔒 Reset Scores</button>` : `<span class="xs muted">Replace demo names or let guests scan QR to auto-add!</span>`}
             </div>
           </div>
           <div class="roster-bar">
@@ -345,7 +361,7 @@ const App = (() => {
               <span class="muted small"> with ${sorted[0].score} pts</span>
             </div>
             <div class="row">
-              <button class="btn btn-sm" id="hub-reset-scores-2">↺ Reset Scores</button>
+              <button class="btn btn-sm" id="hub-reset-scores-2">🔒 Reset Scores</button>
               <button class="btn btn-sm" id="hub-view-lb">Full Standings</button>
             </div>
           </div>
@@ -357,7 +373,12 @@ const App = (() => {
     document.getElementById('qs-full-guide').onclick = openGuideModal;
     const lb = document.getElementById('hub-view-lb');
     if (lb) lb.onclick = openLeaderboardModal;
-    const doHubReset = () => { resetScores(); renderHub(); };
+    const doHubReset = () => {
+      requireAdminPin('Reset ALL player scores to 0', () => {
+        resetScores();
+        renderHub();
+      });
+    };
     const r1 = document.getElementById('hub-reset-scores');
     if (r1) r1.onclick = doHubReset;
     const r2 = document.getElementById('hub-reset-scores-2');
@@ -611,6 +632,54 @@ const App = (() => {
     renderSim();
   }
 
+  function requireAdminPin(actionLabel, onSuccess, onCancel) {
+    const m = document.getElementById('modal-root');
+    m.innerHTML = `
+      <div class="modal-backdrop" id="modal-bg">
+        <div class="modal stack" style="max-width:400px;">
+          <div class="row-between">
+            <h2>🔒 Host Admin Passcode</h2>
+            <button class="btn btn-sm" id="pin-close">✕</button>
+          </div>
+          <p class="small muted" style="margin:0;">Enter the Host passcode to confirm: <strong>${esc(actionLabel)}</strong></p>
+          <form class="stack" id="pin-form">
+            <input type="password" inputmode="numeric" autocomplete="off" class="input mono center" id="pin-input" placeholder="••••" style="font-size:1.6rem;letter-spacing:0.35em;" maxlength="12" required />
+            <div id="pin-err" class="xs center" style="color:var(--cranberry);font-weight:700;min-height:18px;"></div>
+            <div class="row">
+              <button type="button" class="btn" style="flex:1;" id="pin-cancel">Cancel</button>
+              <button type="submit" class="btn btn-danger" style="flex:1;">🔓 Unlock &amp; Confirm</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+
+    const inp = document.getElementById('pin-input');
+    const err = document.getElementById('pin-err');
+    setTimeout(() => { try { inp.focus(); } catch (_) {} }, 30);
+
+    const cancel = () => {
+      closeModal();
+      if (onCancel) onCancel();
+    };
+    document.getElementById('pin-close').onclick = cancel;
+    document.getElementById('pin-cancel').onclick = cancel;
+    document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') cancel(); };
+
+    document.getElementById('pin-form').onsubmit = (e) => {
+      e.preventDefault();
+      if (inp.value.trim() === getAdminPin()) {
+        SoundFX.ding();
+        closeModal();
+        onSuccess();
+      } else {
+        SoundFX.wrong();
+        err.textContent = '❌ Wrong passcode — nice try! 🦃';
+        inp.value = '';
+        inp.focus();
+      }
+    };
+  }
+
   function openLeaderboardModal(justReset) {
     const showResetNotice = justReset === true;
     const m = document.getElementById('modal-root');
@@ -637,13 +706,13 @@ const App = (() => {
                 </div>
                 <div class="row" style="gap:8px;">
                   <strong class="mono" style="font-size:1.2rem;color:var(--pumpkin);">${p.score} pts</strong>
-                  ${p.score > 0 ? `<button class="btn btn-sm" data-zero="${p.id}" title="Zero out ${esc(p.name)}'s score">↺ 0</button>` : ''}
+                  ${p.score > 0 ? `<button class="btn btn-sm" data-zero="${p.id}" title="Zero out ${esc(p.name)}'s score (PIN required)">🔒 0</button>` : ''}
                 </div>
               </div>
             `).join('')}
           </div>
           <div class="row-between">
-            <button class="btn btn-danger" id="lb-reset" ${!anyScore ? 'disabled' : ''}>↺ Reset All Scores to 0</button>
+            <button class="btn btn-danger" id="lb-reset" ${!anyScore ? 'disabled' : ''}>🔒 Reset All Scores to 0</button>
             <button class="btn btn-primary" id="lb-done">Done</button>
           </div>
         </div>
@@ -654,15 +723,20 @@ const App = (() => {
     document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
     m.querySelectorAll('[data-zero]').forEach(btn => {
       btn.onclick = () => {
-        resetPlayerScore(btn.dataset.zero);
-        openLeaderboardModal(false);
-        if (!currentGameKey) renderHub();
+        const target = players.find(x => x.id === btn.dataset.zero);
+        requireAdminPin(`Reset ${target ? target.name + "'s" : 'this'} score to 0`, () => {
+          resetPlayerScore(btn.dataset.zero);
+          openLeaderboardModal(false);
+          if (!currentGameKey) renderHub();
+        }, () => openLeaderboardModal(false));
       };
     });
     document.getElementById('lb-reset').onclick = () => {
-      resetScores();
-      openLeaderboardModal(true);
-      if (!currentGameKey) renderHub();
+      requireAdminPin('Reset ALL player scores to 0', () => {
+        resetScores();
+        openLeaderboardModal(true);
+        if (!currentGameKey) renderHub();
+      }, () => openLeaderboardModal(false));
     };
   }
 
@@ -673,13 +747,13 @@ const App = (() => {
       <div class="modal-backdrop" id="modal-bg">
         <div class="modal stack">
           <div class="row-between">
-            <h2>⚙️ AI Engine Settings</h2>
+            <h2>⚙️ Host &amp; AI Settings</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
           <p class="small muted" style="margin:0;">All 6 games work <strong>100% out of the box</strong> with our Built-In Instant AI. Optionally connect a live AI key or live image generator below:</p>
 
           <div class="stack-sm">
-            <label class="small"><strong>AI Judge & Bot Provider</strong></label>
+            <label class="small"><strong>AI Judge &amp; Bot Provider</strong></label>
             <select class="select" id="ai-provider">
               <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant AI (No Key Needed · Works Offline)</option>
               <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (gemini-2.0-flash)</option>
@@ -696,17 +770,39 @@ const App = (() => {
             <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} style="width:20px;height:20px;" />
             <div>
               <strong class="small">Enable Live Photorealistic AI Images (Pollinations.ai)</strong>
-              <div class="xs muted">When online on phones/laptops, generates real AI images for Prompt Clone & Prompt Panic (falls back to built-in Canvas Artist automatically if offline).</div>
+              <div class="xs muted">When online on phones/laptops, generates real AI images for Prompt Clone &amp; Prompt Panic (falls back to built-in Canvas Artist automatically if offline).</div>
             </div>
           </label>
 
-          <button class="btn btn-primary btn-lg" id="ai-save">Save AI Settings</button>
+          <div class="card stack-sm">
+            <strong class="small">🔒 Change Host Admin Passcode (Protects Score Resets)</strong>
+            <div class="grid-2">
+              <input type="password" inputmode="numeric" class="input" id="pin-cur" placeholder="Current PIN" maxlength="12" />
+              <input type="password" inputmode="numeric" class="input" id="pin-new" placeholder="New PIN (e.g. 4 digits)" maxlength="12" />
+            </div>
+            <div id="pin-save-msg" class="xs muted">Leave blank to keep your current passcode.</div>
+          </div>
+
+          <button class="btn btn-primary btn-lg" id="ai-save">Save Settings</button>
         </div>
       </div>`;
 
     document.getElementById('modal-close').onclick = closeModal;
     document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
     document.getElementById('ai-save').onclick = () => {
+      const curPin = document.getElementById('pin-cur').value.trim();
+      const newPin = document.getElementById('pin-new').value.trim();
+      const msgEl = document.getElementById('pin-save-msg');
+      if (newPin) {
+        if (curPin !== getAdminPin()) {
+          SoundFX.wrong();
+          msgEl.style.color = 'var(--cranberry)';
+          msgEl.textContent = '❌ Current PIN is incorrect — passcode not changed.';
+          return;
+        }
+        setAdminPin(newPin);
+      }
+
       LiveAI.saveSettings({
         provider: document.getElementById('ai-provider').value,
         apiKey: document.getElementById('ai-key').value.trim(),

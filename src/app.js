@@ -140,17 +140,127 @@ const App = (() => {
     }
   }
 
-  function openGame(key) {
+  function isMidRound() {
+    if (!currentGameKey) return false;
+    const p = lastHostBroadcast.phase;
+    return ['writing', 'pass_input', 'defend', 'prompt', 'guess', 'live', 'reveal', 'trivia', 'pitch', 'chain'].includes(p);
+  }
+
+  function updateGameNav() {
+    const bar = document.getElementById('game-nav');
+    if (!bar) return;
+    if (!currentGameKey) {
+      bar.style.display = 'none';
+      bar.innerHTML = '';
+      return;
+    }
+    const meta = GAMES_META.find(g => g.key === currentGameKey);
+    bar.style.display = 'flex';
+    bar.innerHTML = `
+      <button class="btn btn-sm" id="btn-back-menu" style="gap:6px;padding:7px 13px;">
+        <span style="font-size:1.1rem;line-height:1;">←</span>
+        <span>Main Menu</span>
+      </button>
+      <div class="row" style="gap:6px;">
+        <span class="xs muted" style="font-weight:700;">${meta ? `${meta.icon} ${esc(meta.title)}` : ''}</span>
+        <button class="btn btn-sm" id="btn-this-rules">📖 Rules</button>
+      </div>`;
+
+    document.getElementById('btn-back-menu').onclick = () => {
+      SoundFX.pop();
+      requestReturnHome();
+    };
+    document.getElementById('btn-this-rules').onclick = () => {
+      SoundFX.pop();
+      openGameRulesModal(currentGameKey);
+    };
+  }
+
+  function openGameRulesModal(key) {
+    const g = GAMES_META.find(x => x.key === key);
+    if (!g) { openGuideModal(); return; }
+    const m = document.getElementById('modal-root');
+    m.innerHTML = `
+      <div class="modal-backdrop" id="modal-bg">
+        <div class="modal stack" style="max-width:480px;">
+          <div class="row-between">
+            <h2>${g.icon} ${esc(g.title)} Rules</h2>
+            <button class="btn btn-sm" id="modal-close">✕</button>
+          </div>
+          <div class="row">
+            <span class="tag tag-gold">👥 ${esc(g.players)}</span>
+            <span class="tag">⏱️ ${esc(g.time)}</span>
+          </div>
+          <div class="xs muted">📱 ${esc(g.devices)}</div>
+          <ol class="small" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;">
+            ${g.rules.map(r => `<li>${esc(r)}</li>`).join('')}
+          </ol>
+          <div class="row-between">
+            <button class="btn btn-sm" id="rules-all">All Games Guide</button>
+            <button class="btn btn-primary" id="rules-ok">Back to Game</button>
+          </div>
+        </div>
+      </div>`;
+    document.getElementById('modal-close').onclick = closeModal;
+    document.getElementById('rules-ok').onclick = closeModal;
+    document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
+    document.getElementById('rules-all').onclick = () => { closeModal(); openGuideModal(); };
+  }
+
+  function requestReturnHome(fromPopState = false) {
+    if (!currentGameKey) return;
+    if (isMidRound()) {
+      if (fromPopState) {
+        try { window.history.pushState({ view: 'game', key: currentGameKey }, '', `#${currentGameKey}`); } catch (_) {}
+      }
+      const m = document.getElementById('modal-root');
+      m.innerHTML = `
+        <div class="modal-backdrop" id="modal-bg">
+          <div class="modal stack" style="max-width:410px;">
+            <div class="row-between">
+              <h2>← Leave Active Round?</h2>
+              <button class="btn btn-sm" id="leave-stay-x">✕</button>
+            </div>
+            <p class="small muted" style="margin:0;">A round is currently in progress. Returning to the Main Menu will end this round, <strong>but all leaderboard scores stay saved!</strong></p>
+            <div class="row">
+              <button class="btn btn-primary" style="flex:1;" id="leave-stay">Keep Playing</button>
+              <button class="btn" style="flex:1;" id="leave-go">← Main Menu</button>
+            </div>
+          </div>
+        </div>`;
+      document.getElementById('leave-stay-x').onclick = closeModal;
+      document.getElementById('leave-stay').onclick = closeModal;
+      document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
+      document.getElementById('leave-go').onclick = () => {
+        closeModal();
+        openGame(null, { skipPush: true });
+      };
+      return;
+    }
+    openGame(null, { skipPush: fromPopState });
+  }
+
+  function openGame(key, opts = {}) {
     if (currentGame && currentGame.cleanup) currentGame.cleanup();
     currentGameKey = key;
     if (!key) {
       currentGame = null;
       broadcastHostState(null, 'hub', {});
+      updateGameNav();
+      if (!opts.skipPush) {
+        try { window.history.pushState({ view: 'hub' }, '', window.location.pathname + window.location.search); } catch (_) {}
+      }
       renderHub();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
     const factory = Games[key];
     if (!factory) return;
+    if (!opts.skipPush) {
+      try { window.history.pushState({ view: 'game', key }, '', `#${key}`); } catch (_) {}
+    }
+    lastHostBroadcast = { game: key, phase: 'lobby', payload: {} };
+    updateGameNav();
     currentGame = factory(publicApi);
     currentGame.render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1104,11 +1214,12 @@ const App = (() => {
             <button class="icon-pill" id="btn-ai" title="AI Settings">⚙️</button>
           </div>
         </header>
+        <nav id="game-nav" class="row-between" style="display:none;margin-bottom:14px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:12px;"></nav>
         <main id="stage"></main>
       </div>
       <div id="modal-root"></div>`;
 
-    document.getElementById('btn-home').onclick = () => { SoundFX.pop(); openGame(null); };
+    document.getElementById('btn-home').onclick = () => { SoundFX.pop(); requestReturnHome(); };
     document.getElementById('btn-qr').onclick = openQRModal;
     document.getElementById('btn-guide').onclick = openGuideModal;
     document.getElementById('btn-leaderboard').onclick = openLeaderboardModal;
@@ -1121,6 +1232,15 @@ const App = (() => {
       const muted = SoundFX.toggleMute();
       document.getElementById('btn-sound').textContent = muted ? '🔇' : '🔊';
     };
+
+    try { window.history.replaceState({ view: 'hub' }, '', window.location.pathname + window.location.search); } catch (_) {}
+    window.addEventListener('popstate', (ev) => {
+      if (currentGameKey) {
+        requestReturnHome(true);
+      } else if (ev.state && ev.state.view === 'game' && ev.state.key) {
+        openGame(ev.state.key, { skipPush: true });
+      }
+    });
 
     updateTopbar();
     renderHub();

@@ -1186,67 +1186,67 @@ const AIArt = (() => {
   };
 
   const SCENE_RULES = [
-    { key: 'space', words: ['space', 'mars', 'moon', 'planet', 'galaxy', 'cosmic', 'orbit', 'universe', 'alien planet'], label: 'Outer Space' },
-    { key: 'beach', words: ['beach', 'island', 'ocean', 'tropical', 'palm', 'sand', 'surfing', 'wave'], label: 'Sunny Beach' },
-    { key: 'snow', words: ['snow', 'winter', 'arctic', 'blizzard', 'ice', 'mountain', 'ski', 'igloo', 'north pole'], label: 'Snowy Mountains' },
-    { key: 'volcano', words: ['volcano', 'lava', 'magma', 'fiery', 'eruption'], label: 'Volcano' },
-    { key: 'city', words: ['city', 'skyline', 'downtown', 'street', 'cyberpunk', 'metropolis', 'airport', 'skyscraper'], label: 'City Skyline' },
-    { key: 'kitchen', words: ['kitchen', 'table', 'dinner', 'feast', 'dining', 'oven', 'bakery', 'restaurant', 'home'], label: 'Dinner Table' },
-    { key: 'underwater', words: ['underwater', 'sea', 'reef', 'submarine', 'coral', 'fishbowl'], label: 'Underwater' },
-    { key: 'night', words: ['night', 'midnight', 'starry', 'moonlight', 'dark', 'spooky', 'haunted'], label: 'Starry Night' },
-    { key: 'sunset', words: ['sunset', 'sunrise', 'dusk', 'golden hour', 'twilight'], label: 'Golden Sunset' },
-    { key: 'forest', words: ['forest', 'woods', 'autumn', 'fall', 'park', 'farm', 'barn', 'meadow', 'leaves', 'garden'], label: 'Autumn Woods' },
+    { key: 'space', words: ['space', 'mars', 'moon', 'planet', 'galaxy', 'cosmic', 'orbit', 'universe', 'red planet', 'cosmos', 'zero gravity', 'crater'], label: 'Outer Space' },
+    { key: 'beach', words: ['beach', 'island', 'ocean', 'tropical', 'palm', 'sand', 'surfing', 'wave', 'shore', 'coast', 'tides', 'vacation', 'sunshine'], label: 'Sunny Beach' },
+    { key: 'snow', words: ['snow', 'winter', 'arctic', 'blizzard', 'ice', 'mountain', 'ski', 'igloo', 'north pole', 'frosty', 'chilly', 'freezing', 'peaks', 'alps'], label: 'Snowy Mountains' },
+    { key: 'volcano', words: ['volcano', 'lava', 'magma', 'fiery', 'eruption', 'molten', 'hot rock'], label: 'Volcano' },
+    { key: 'city', words: ['city', 'skyline', 'downtown', 'street', 'cyberpunk', 'metropolis', 'airport', 'skyscraper', 'buildings', 'urban', 'towers', 'traffic'], label: 'City Skyline' },
+    { key: 'kitchen', words: ['kitchen', 'table', 'dinner', 'feast', 'dining', 'oven', 'bakery', 'restaurant', 'home', 'stove', 'counter', 'cooking room', 'tablecloth'], label: 'Dinner Table' },
+    { key: 'underwater', words: ['underwater', 'sea', 'reef', 'submarine', 'coral', 'fishbowl', 'deep blue', 'bubbles', 'aquatic', 'scuba', 'submerged'], label: 'Underwater' },
+    { key: 'night', words: ['night', 'midnight', 'starry', 'moonlight', 'dark', 'spooky', 'haunted', 'crescent', 'bedtime', 'evening', 'stars'], label: 'Starry Night' },
+    { key: 'sunset', words: ['sunset', 'sunrise', 'dusk', 'golden hour', 'twilight', 'horizon', 'orange sky', 'evening glow', 'sundown'], label: 'Golden Sunset' },
+    { key: 'forest', words: ['forest', 'woods', 'autumn', 'fall', 'park', 'farm', 'barn', 'meadow', 'leaves', 'garden', 'trees', 'nature', 'outdoors', 'foliage'], label: 'Autumn Woods' },
   ];
 
   const STYLE_RULES = [
-    { key: 'pixel', words: ['pixel', '8-bit', '8bit', 'retro game', 'arcade', 'minecraft', 'blocky'], label: 'Pixel Art' },
-    { key: 'neon', words: ['neon', 'cyber', 'glowing', 'laser', 'synthwave', 'glow'], label: 'Neon Glow' },
-    { key: 'vintage', words: ['vintage', 'sepia', 'old photo', '1621', 'antique', 'retro', 'polaroid'], label: 'Vintage Sepia' },
-    { key: 'watercolor', words: ['watercolor', 'pastel', 'dreamy', 'painted', 'painting', 'soft', 'oil painting'], label: 'Watercolor' },
+    { key: 'pixel', words: ['pixel', '8-bit', '8bit', 'retro game', 'arcade', 'minecraft', 'blocky', 'square dots', 'video game'], label: 'Pixel Art' },
+    { key: 'neon', words: ['neon', 'cyber', 'glowing', 'laser', 'synthwave', 'glow', 'electric', 'bright synth'], label: 'Neon Glow' },
+    { key: 'vintage', words: ['vintage', 'sepia', 'old photo', '1621', 'antique', 'retro', 'polaroid', 'old-fashioned', 'faded brown'], label: 'Vintage Sepia' },
+    { key: 'watercolor', words: ['watercolor', 'pastel', 'dreamy', 'painted', 'painting', 'soft', 'oil painting', 'brushstrokes'], label: 'Watercolor' },
     { key: 'sketch', words: ['sketch', 'pencil', 'drawing', 'black and white', 'ink', 'comic', 'doodle'], label: 'Ink Sketch' },
     { key: 'storybook', words: ['cartoon', 'storybook', 'cute', 'illustrated', '3d', 'pixar'], label: 'Storybook' },
   ];
 
   const WEATHER_RULES = [
-    { key: 'rainbow', words: ['rainbow', 'colorful arch'], label: 'Rainbow' },
-    { key: 'snowflakes', words: ['snowing', 'snowflakes', 'snowfall', 'flurry'], label: 'Snowfall' },
-    { key: 'leaves', words: ['falling leaves', 'autumn leaves', 'leaves', 'windy'], label: 'Falling Leaves' },
-    { key: 'fireworks', words: ['fireworks', 'explosion', 'sparks', 'celebration', 'confetti', 'party'], label: 'Fireworks & Confetti' },
-    { key: 'rain', words: ['rain', 'raining', 'storm', 'lightning', 'thunder'], label: 'Stormy Rain' },
+    { key: 'rainbow', words: ['rainbow', 'colorful arch', 'seven colors', 'prism', 'multicolor arc'], label: 'Rainbow' },
+    { key: 'snowflakes', words: ['snowing', 'snowflakes', 'snowfall', 'flurry', 'white flakes'], label: 'Snowfall' },
+    { key: 'leaves', words: ['falling leaves', 'autumn leaves', 'leaves', 'windy', 'foliage'], label: 'Falling Leaves' },
+    { key: 'fireworks', words: ['fireworks', 'explosion', 'sparks', 'celebration', 'confetti', 'party', 'sparklers', 'sky burst', 'booms'], label: 'Fireworks & Confetti' },
+    { key: 'rain', words: ['rain', 'raining', 'storm', 'lightning', 'thunder', 'drizzle', 'puddles', 'downpour', 'wet weather'], label: 'Stormy Rain' },
   ];
 
   const SUBJECT_RULES = [
-    { key: 'turkey', words: ['turkey', 'gobbler', 'gobble'], label: 'Turkey' },
-    { key: 'pilgrim', words: ['pilgrim', 'settler', 'puritan'], label: 'Pilgrim' },
-    { key: 'pie', words: ['pie', 'pumpkin pie', 'apple pie', 'tart', 'dessert'], label: 'Pumpkin Pie' },
-    { key: 'pumpkin', words: ['pumpkin', 'jack-o-lantern', 'gourd', 'squash'], label: 'Pumpkin' },
-    { key: 'gravy', words: ['gravy', 'gravy boat', 'sauce', 'mashed potato', 'potatoes'], label: 'Gravy Boat' },
-    { key: 'dog', words: ['dog', 'puppy', 'pup', 'hound', 'corgi', 'golden retriever'], label: 'Dog' },
-    { key: 'cat', words: ['cat', 'kitten', 'kitty', 'tabby'], label: 'Cat' },
-    { key: 'robot', words: ['robot', 'bot', 'android', 'cyborg', 'mech'], label: 'Robot' },
-    { key: 'alien', words: ['alien', 'ufo', 'martian', 'spaceship', 'saucer'], label: 'Alien / UFO' },
-    { key: 'astronaut', words: ['astronaut', 'spaceman', 'cosmonaut'], label: 'Astronaut' },
-    { key: 'dragon', words: ['dragon', 'dinosaur', 'dino', 't-rex', 'trex'], label: 'Dragon / Dino' },
-    { key: 'grandma', words: ['grandma', 'grandpa', 'chef', 'cook', 'baker', 'family', 'person', 'kid'], label: 'Chef / Family' },
-    { key: 'fox', words: ['fox', 'squirrel', 'owl', 'bear', 'raccoon'], label: 'Woodland Critter' },
-    { key: 'pizza', words: ['pizza', 'taco', 'burger', 'sushi', 'donut', 'ice cream'], label: 'Wild Food' },
-    { key: 'rocket', words: ['rocket', 'jetpack', 'spaceship'], label: 'Rocket' },
+    { key: 'turkey', words: ['turkey', 'gobbler', 'gobble', 'bird', 'feathers', 'wattle', 'poultry', 'fowl', 'drumstick'], label: 'Turkey' },
+    { key: 'pilgrim', words: ['pilgrim', 'settler', 'puritan', 'mayflower', 'colonist', 'pioneer', '1621'], label: 'Pilgrim' },
+    { key: 'pie', words: ['pie', 'pumpkin pie', 'apple pie', 'tart', 'dessert', 'pastry', 'crust', 'whipped cream', 'sweet slice'], label: 'Pumpkin Pie' },
+    { key: 'pumpkin', words: ['pumpkin', 'jack-o-lantern', 'gourd', 'squash', 'orange vegetable', 'halloween', 'carved'], label: 'Pumpkin' },
+    { key: 'gravy', words: ['gravy', 'gravy boat', 'sauce', 'mashed potato', 'potatoes', 'brown liquid', 'broth', 'pouring'], label: 'Gravy Boat' },
+    { key: 'dog', words: ['dog', 'puppy', 'pup', 'hound', 'corgi', 'golden retriever', 'canine', 'barking', 'woof', 'good boy'], label: 'Dog' },
+    { key: 'cat', words: ['cat', 'kitten', 'kitty', 'tabby', 'feline', 'meow', 'whiskers', 'purr'], label: 'Cat' },
+    { key: 'robot', words: ['robot', 'bot', 'android', 'cyborg', 'mech', 'machine', 'metal', 'beep', 'antenna', 'metallic'], label: 'Robot' },
+    { key: 'alien', words: ['alien', 'ufo', 'martian', 'spaceship', 'saucer', 'flying disc', 'extraterrestrial', 'green creature', 'tractor beam'], label: 'Alien / UFO' },
+    { key: 'astronaut', words: ['astronaut', 'spaceman', 'cosmonaut', 'space suit', 'helmet', 'nasa', 'moonwalker'], label: 'Astronaut' },
+    { key: 'dragon', words: ['dragon', 'dinosaur', 'dino', 't-rex', 'trex', 'fire breather', 'reptile', 'scales', 'winged lizard'], label: 'Dragon / Dino' },
+    { key: 'grandma', words: ['grandma', 'grandpa', 'chef', 'cook', 'baker', 'family', 'person', 'kid', 'nana', 'elder', 'apron'], label: 'Chef / Family' },
+    { key: 'fox', words: ['fox', 'squirrel', 'owl', 'bear', 'raccoon', 'bushy tail', 'woodland critter', 'clever animal'], label: 'Woodland Critter' },
+    { key: 'pizza', words: ['pizza', 'taco', 'burger', 'sushi', 'donut', 'ice cream', 'pepperoni', 'cheese slice', 'italian'], label: 'Wild Food' },
+    { key: 'rocket', words: ['rocket', 'jetpack', 'spaceship', 'blastoff', 'thruster', 'shuttle', 'launch'], label: 'Rocket' },
   ];
 
   const PROP_RULES = [
-    { key: 'skateboard', words: ['skateboard', 'skating', 'skater', 'scooter', 'roller'], label: 'Skateboard' },
-    { key: 'sunglasses', words: ['sunglasses', 'shades', 'cool glasses', 'glasses'], label: 'Sunglasses' },
-    { key: 'crown', words: ['crown', 'king', 'queen', 'royal', 'tiara'], label: 'Royal Crown' },
-    { key: 'wizardhat', words: ['wizard', 'witch', 'magic hat', 'magician'], label: 'Wizard Hat' },
-    { key: 'chefhat', words: ['chef hat', 'baker', 'cooking', 'apron', 'whisk', 'spatula'], label: 'Chef Hat' },
-    { key: 'pilgrimhat', words: ['buckle hat', 'pilgrim hat', 'top hat', 'hat'], label: 'Buckle Hat' },
-    { key: 'guitar', words: ['guitar', 'banjo', 'music', 'dj', 'headphones', 'microphone', 'singing', 'band'], label: 'Music Gear' },
-    { key: 'balloon', words: ['balloon', 'balloons', 'parade', 'floating'], label: 'Balloons' },
-    { key: 'candle', words: ['candle', 'candles', 'lantern', 'torch', 'campfire', 'fire'], label: 'Glowing Candles' },
+    { key: 'skateboard', words: ['skateboard', 'skating', 'skater', 'scooter', 'roller', 'wheels', 'wooden board', 'kickflip', 'cruising', 'deck'], label: 'Skateboard' },
+    { key: 'sunglasses', words: ['sunglasses', 'shades', 'cool glasses', 'glasses', 'dark lenses', 'eyewear'], label: 'Sunglasses' },
+    { key: 'crown', words: ['crown', 'king', 'queen', 'royal', 'tiara', 'monarch', 'gold headpiece', 'majesty'], label: 'Royal Crown' },
+    { key: 'wizardhat', words: ['wizard', 'witch', 'magic hat', 'magician', 'pointy hat', 'sorcerer', 'spells'], label: 'Wizard Hat' },
+    { key: 'chefhat', words: ['chef hat', 'baker', 'cooking', 'apron', 'whisk', 'spatula', 'tall white hat'], label: 'Chef Hat' },
+    { key: 'pilgrimhat', words: ['buckle hat', 'pilgrim hat', 'top hat', 'hat', 'buckle', 'tall black hat'], label: 'Buckle Hat' },
+    { key: 'guitar', words: ['guitar', 'banjo', 'music', 'dj', 'headphones', 'microphone', 'singing', 'band', 'strings', 'rockstar', 'strumming', 'instrument'], label: 'Music Gear' },
+    { key: 'balloon', words: ['balloon', 'balloons', 'parade', 'floating', 'helium', 'inflatable'], label: 'Balloons' },
+    { key: 'candle', words: ['candle', 'candles', 'lantern', 'torch', 'campfire', 'fire', 'wax', 'flame', 'flickering'], label: 'Glowing Candles' },
     { key: 'umbrella', words: ['umbrella', 'parasol'], label: 'Umbrella' },
-    { key: 'trophy', words: ['trophy', 'medal', 'champion', 'winner', 'gold cup'], label: 'Trophy' },
-    { key: 'cranberry', words: ['cranberry', 'cranberries', 'juggling', 'corn', 'cornucopia'], label: 'Cranberries' },
-    { key: 'cape', words: ['cape', 'superhero', 'flying', 'hero'], label: 'Hero Cape' },
+    { key: 'trophy', words: ['trophy', 'medal', 'champion', 'winner', 'gold cup', 'prize', 'first place', 'award'], label: 'Trophy' },
+    { key: 'cranberry', words: ['cranberry', 'cranberries', 'juggling', 'corn', 'cornucopia', 'red berries', 'tart fruit', 'tossing'], label: 'Cranberries' },
+    { key: 'cape', words: ['cape', 'superhero', 'flying', 'hero', 'cloak', 'soaring'], label: 'Hero Cape' },
   ];
 
   function parsePrompt(rawPrompt) {
@@ -2163,30 +2163,33 @@ const GAME_DATA = {
     ],
   },
 
-  // GAME 2: PROMPT PANIC! (Speed AI Art Showdown)
+  // GAME 2: PROMPT PANIC! (Taboo Speed AI Art Showdown)
   promptPanic: {
     targets: [
-      { phrase: 'A turkey riding a skateboard at sunset', hints: ['turkey', 'skateboard', 'sunset'] },
-      { phrase: 'A pilgrim astronaut eating pumpkin pie on Mars', hints: ['pilgrim', 'astronaut', 'pie', 'space'] },
-      { phrase: 'A robot chef juggling cranberries in the kitchen', hints: ['robot', 'chef', 'cranberries', 'kitchen'] },
-      { phrase: 'A cat wearing a royal crown guarding a gravy boat', hints: ['cat', 'crown', 'gravy'] },
-      { phrase: 'A dragon wearing sunglasses on a sunny beach', hints: ['dragon', 'sunglasses', 'beach'] },
-      { phrase: 'A dog wearing a wizard hat in a snowy mountain', hints: ['dog', 'wizard', 'snow'] },
-      { phrase: 'A UFO beaming up a giant pumpkin pie at night', hints: ['ufo', 'pie', 'night'] },
-      { phrase: 'A turkey playing guitar under fireworks in the city', hints: ['turkey', 'guitar', 'fireworks', 'city'] },
-      { phrase: 'A pixel art pumpkin wearing a pirate buckle hat', hints: ['pixel', 'pumpkin', 'hat'] },
-      { phrase: 'A superhero fox flying over a rainbow forest', hints: ['fox', 'cape', 'rainbow', 'forest'] },
-      { phrase: 'Two turkeys celebrating with balloons at a volcano', hints: ['two', 'turkey', 'balloons', 'volcano'] },
-      { phrase: 'A neon cyberpunk robot eating pizza underwater', hints: ['neon', 'robot', 'pizza', 'underwater'] },
-      { phrase: 'A vintage photo of a pilgrim riding a rocket', hints: ['vintage', 'pilgrim', 'rocket'] },
-      { phrase: 'Three tiny pumpkins glowing with candles at night', hints: ['three', 'pumpkin', 'candles', 'night'] },
-      { phrase: 'A grandma chef winning a gold trophy in autumn woods', hints: ['grandma', 'trophy', 'forest'] },
-      { phrase: 'A skateboard dog delivering a pumpkin pie in the rain', hints: ['skateboard', 'dog', 'pie', 'rain'] },
+      { phrase: 'A turkey riding a skateboard at sunset', banned: ['turkey', 'skateboard', 'sunset'], hints: ['gobbler bird', 'wooden board with wheels', 'golden dusk'] },
+      { phrase: 'A pilgrim astronaut eating pumpkin pie on Mars', banned: ['pilgrim', 'astronaut', 'pumpkin', 'pie', 'mars'], hints: ['1621 settler', 'space helmet', 'whipped cream dessert', 'red planet'] },
+      { phrase: 'A robot chef juggling cranberries in the kitchen', banned: ['robot', 'chef', 'cranberries', 'kitchen'], hints: ['metal machine', 'tall white hat', 'red berries', 'dinner stove'] },
+      { phrase: 'A cat wearing a royal crown guarding a gravy boat', banned: ['cat', 'crown', 'gravy'], hints: ['meow feline', 'gold king headpiece', 'brown sauce pouring'] },
+      { phrase: 'A dragon wearing sunglasses on a sunny beach', banned: ['dragon', 'sunglasses', 'beach'], hints: ['fire breather', 'dark shades', 'sandy ocean shore'] },
+      { phrase: 'A dog wearing a wizard hat in a snowy mountain', banned: ['dog', 'wizard', 'snow', 'mountain'], hints: ['barking pup', 'pointy magic hat', 'frosty winter peaks'] },
+      { phrase: 'A UFO beaming up a giant pumpkin pie at night', banned: ['ufo', 'pumpkin', 'pie', 'night'], hints: ['flying saucer', 'huge orange dessert', 'crescent starry sky'] },
+      { phrase: 'A turkey playing guitar under fireworks in the city', banned: ['turkey', 'guitar', 'fireworks', 'city'], hints: ['gobbler bird', 'rockstar strings', 'sky sparks', 'tall buildings'] },
+      { phrase: 'A pixel art pumpkin wearing a buckle hat', banned: ['pixel', 'pumpkin', 'buckle', 'hat'], hints: ['blocky 8-bit', 'carved orange gourd', 'tall black settler cap'] },
+      { phrase: 'A superhero fox flying over a rainbow forest', banned: ['superhero', 'fox', 'rainbow', 'forest'], hints: ['cloak hero', 'bushy tail critter', 'seven colors arch', 'autumn trees'] },
+      { phrase: 'Two turkeys celebrating with balloons at a volcano', banned: ['turkey', 'balloons', 'volcano'], hints: ['pair of gobblers', 'floating helium', 'molten lava'] },
+      { phrase: 'A neon cyberpunk robot eating pizza underwater', banned: ['neon', 'robot', 'pizza', 'underwater'], hints: ['glowing synth', 'metal android', 'pepperoni cheese slice', 'deep sea bubbles'] },
+      { phrase: 'A vintage photo of a pilgrim riding a rocket', banned: ['vintage', 'pilgrim', 'rocket'], hints: ['old sepia', 'mayflower settler', 'blastoff shuttle'] },
+      { phrase: 'Three tiny pumpkins glowing with candles at night', banned: ['pumpkin', 'candles', 'night'], hints: ['3 mini gourds', 'flickering wax flame', 'crescent starry sky'] },
+      { phrase: 'A grandma chef winning a gold trophy in autumn woods', banned: ['grandma', 'chef', 'trophy', 'woods'], hints: ['nana baker', 'first place prize', 'falling leaves forest'] },
+      { phrase: 'A skateboard dog delivering a pumpkin pie in the rain', banned: ['skateboard', 'dog', 'pumpkin', 'pie', 'rain'], hints: ['wheels board', 'good boy canine', 'whipped cream pastry', 'stormy drizzle'] },
     ],
     quickChips: [
-      'turkey', 'pilgrim', 'pumpkin pie', 'gravy boat', 'robot', 'dog', 'cat', 'dragon', 'UFO', 'astronaut',
-      'skateboard', 'sunglasses', 'crown', 'wizard hat', 'guitar', 'rocket', 'fireworks', 'rainbow',
-      'in space', 'on a beach', 'in snow', 'in kitchen', 'at sunset', 'pixel art', 'neon', 'vintage'
+      'gobbler bird', '1621 settler', 'whipped cream pastry', 'orange gourd', 'brown sauce',
+      'metal android', 'barking pup', 'meow feline', 'fire breather', 'flying saucer', 'space helmet',
+      'wooden board with wheels', 'dark shades', 'king gold headpiece', 'pointy magic hat', 'rockstar strings',
+      'blastoff shuttle', 'red berries', 'first place prize', 'floating helium', 'flickering flame',
+      'red planet cosmos', 'sandy shore', 'frosty peaks', 'molten lava', 'tall urban buildings',
+      'deep sea bubbles', 'golden dusk', 'crescent starry sky', 'blocky 8-bit', 'glowing synth', 'old sepia'
     ]
   },
 
@@ -3511,9 +3514,27 @@ const Games = (() => {
       render();
     }
 
+    function getBannedHits(text) {
+      const lower = (text || '').toLowerCase();
+      const banned = target.banned || [];
+      return banned.filter(w => {
+        const stem = w.toLowerCase().replace(/ies$/, 'y').replace(/s$/, '');
+        return lower.includes(w.toLowerCase()) || (stem.length >= 4 && lower.includes(stem));
+      });
+    }
+
+    function stripBanned(text) {
+      let clean = text || '';
+      for (const w of (target.banned || [])) {
+        const stem = w.replace(/ies$/, '(?:y|ies)').replace(/s$/, 's?');
+        clean = clean.replace(new RegExp(stem, 'ig'), '');
+      }
+      return clean.replace(/\s+/g, ' ').trim();
+    }
+
     function startPromptTimer() {
       cleanup();
-      timeLeft = 25;
+      timeLeft = 35;
       phase = 'prompt';
       broadcast();
       timer = setInterval(() => {
@@ -3521,7 +3542,7 @@ const Games = (() => {
         if (timeLeft <= 5 && timeLeft > 0) SoundFX.tick(0.75);
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
-          generateAndGuess();
+          generateAndGuess(true);
           return;
         }
         const el = document.getElementById('panic-timer');
@@ -3533,9 +3554,15 @@ const Games = (() => {
       render();
     }
 
-    function generateAndGuess() {
+    function generateAndGuess(fromTimeout = false) {
+      if (!fromTimeout && getBannedHits(userPrompt).length > 0) {
+        SoundFX.wrong();
+        return;
+      }
       cleanup();
-      const finalPrompt = userPrompt.trim() || target.hints.join(' ');
+      const cleaned = stripBanned(userPrompt);
+      const finalPrompt = cleaned || target.hints.join(' ');
+      userPrompt = finalPrompt;
       artResult = AIArt.renderDataURL(finalPrompt, 440, 300);
       blurPx = 26;
       buzzedPlayer = null;
@@ -3565,12 +3592,12 @@ const Games = (() => {
       if (phase === 'pick') {
         root.innerHTML = `
           <div class="stack fade-in">
-            <h2>🎨 Prompt Panic!</h2>
-            <p class="muted small" style="margin:0;">One artist gets a wacky secret phrase and 25 seconds to prompt the AI. Everyone else races to buzz in as the artwork unblurs!</p>
+            <h2>🎨 Prompt Panic! (AI Taboo)</h2>
+            <p class="muted small" style="margin:0;">Think <strong>Taboo + Pictionary + AI</strong>! The artist gets a secret phrase and 35 seconds to describe it to the AI <strong>WITHOUT typing any of the Banned Words</strong>. Then everyone races to buzz in as the artwork unblurs!</p>
             <div class="card center stack">
               <div style="font-size:3rem;">${artist.avatar}</div>
               <h3>Up Next as AI Artist: ${esc(artist.name)}</h3>
-              <p class="small muted" style="margin:0;">Hand the phone to <strong>${esc(artist.name)}</strong> (everyone else look away!).</p>
+              <p class="small muted" style="margin:0;">Hand the screen to <strong>${esc(artist.name)}</strong> (everyone else look away so you don't see the secret phrase!).</p>
               <button class="btn btn-primary btn-lg" id="panic-reveal-secret">👀 I'm ${esc(artist.name)} — Show Secret Phrase</button>
             </div>
           </div>`;
@@ -3582,39 +3609,64 @@ const Games = (() => {
       }
 
       if (phase === 'prompt') {
+        const hits = getBannedHits(userPrompt);
+        const safeChips = GAME_DATA.promptPanic.quickChips.filter(c => getBannedHits(c).length === 0);
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
               <div><span class="tag tag-gold">SECRET PHRASE (DON'T SAY ALOUD!)</span></div>
               <div class="timer-box ${timeLeft <= 6 ? 'urgent' : ''}" id="panic-timer">${fmtTime(timeLeft)}</div>
             </div>
-            <div class="card-warm center">
+            <div class="card-warm center stack-sm">
               <h2 style="margin:0;color:var(--pumpkin);">"${esc(target.phrase)}"</h2>
+              <div class="row" style="justify-content:center;gap:6px;">
+                <span class="xs" style="font-weight:800;color:var(--cranberry);">🚫 BANNED WORDS:</span>
+                ${(target.banned || []).map(w => `<span class="tag tag-new">🚫 ${esc(w)}</span>`).join('')}
+              </div>
+              <p class="xs muted" style="margin:0;">Make the AI draw the secret phrase using <strong>synonyms, clues, or descriptions</strong>—you CANNOT type the red banned words!</p>
             </div>
             <div class="card stack">
-              <label class="small"><strong>Type your AI image prompt fast!</strong> (Or tap kid-friendly chips below):</label>
-              <textarea class="textarea" id="panic-input" placeholder="Describe the scene so the AI paints it...">${esc(userPrompt)}</textarea>
-              <div class="chip-wrap">
-                ${GAME_DATA.promptPanic.quickChips.map(c => `<button type="button" class="chip" data-pc="${c}">+ ${c}</button>`).join('')}
+              <label class="small"><strong>Describe it creatively without the banned words!</strong></label>
+              <textarea class="textarea" id="panic-input" placeholder="Example: instead of 'turkey', type 'giant feathered gobbler bird'...">${esc(userPrompt)}</textarea>
+              <div id="panic-warn" class="xs" style="color:var(--cranberry);font-weight:800;min-height:18px;">
+                ${hits.length ? `🚫 Banned word spotted: ${hits.map(w => `"${w}"`).join(', ')} — swap it for a creative clue!` : ''}
               </div>
-              <button class="btn btn-primary btn-lg" id="panic-gen">🎨 Generate AI Art Now!</button>
+              <div class="xs muted"><strong>Kid-Friendly Clue Chips</strong> (tap to add!):</div>
+              <div class="chip-wrap">
+                ${safeChips.slice(0, 18).map(c => `<button type="button" class="chip" data-pc="${esc(c)}">+ ${esc(c)}</button>`).join('')}
+              </div>
+              <button class="btn btn-primary btn-lg" id="panic-gen" ${hits.length || !userPrompt.trim() ? 'disabled' : ''}>🎨 Generate AI Art Now!</button>
             </div>
           </div>`;
 
         const inp = document.getElementById('panic-input');
-        inp.oninput = (e) => { userPrompt = e.target.value; };
+        const warn = document.getElementById('panic-warn');
+        const genBtn = document.getElementById('panic-gen');
+        const syncValidity = () => {
+          const curHits = getBannedHits(userPrompt);
+          if (curHits.length) {
+            warn.textContent = `🚫 Banned word spotted: ${curHits.map(w => `"${w}"`).join(', ')} — describe it another way!`;
+            genBtn.disabled = true;
+          } else {
+            warn.textContent = '';
+            genBtn.disabled = !userPrompt.trim();
+          }
+        };
+        inp.oninput = (e) => { userPrompt = e.target.value; syncValidity(); };
         root.querySelectorAll('[data-pc]').forEach(b => {
           b.onclick = () => {
             userPrompt = (userPrompt.trim() ? userPrompt.trim() + ' ' : '') + b.dataset.pc;
             inp.value = userPrompt;
+            SoundFX.pop();
+            syncValidity();
           };
         });
-        document.getElementById('panic-gen').onclick = generateAndGuess;
+        genBtn.onclick = () => generateAndGuess(false);
         return;
       }
 
       if (phase === 'guess') {
-        const imgUrl = liveCfg.liveImages ? LiveAI.getLiveImageUrl(userPrompt || target.phrase, artistIdx + 7) : artResult.dataUrl;
+        const imgUrl = liveCfg.liveImages ? LiveAI.getLiveImageUrl(userPrompt || target.hints.join(' '), artistIdx + 7) : artResult.dataUrl;
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
@@ -4842,17 +4894,17 @@ const App = (() => {
       key: 'promptPanic',
       icon: '🎨',
       title: 'Prompt Panic!',
-      tag: 'SPEED ART BUZZER',
+      tag: 'AI TABOO + BUZZER',
       tagClass: 'tag-kid',
       players: '3–10 players',
       time: '2–3 min/round',
       devices: 'Host screen + QR buzzers (or table buzzers)',
-      desc: '25 seconds to prompt the AI from a wacky secret phrase—then everyone races to buzz in as the artwork slowly unblurs!',
-      meta: '3–10 players · 2–3 min · Fast Reflexes',
+      desc: 'Taboo meets Pictionary! You have 35 seconds to get the AI to draw a secret phrase WITHOUT typing the banned words—then everyone races to buzz in as it unblurs!',
+      meta: '3–10 players · 2–3 min · AI Taboo',
       rules: [
-        'One player/team peeks at the secret Thanksgiving phrase and has 25 seconds to type (or tap kid-friendly chips) to make the AI draw it.',
-        'The AI image appears heavily blurred and slowly sharpens over 20 seconds.',
-        'Everyone else races to hit BUZZ IN (on their own phone or the Host screen) and shout the secret phrase—earlier guesses win bigger points!',
+        'One player/team peeks at the secret phrase and its red 🚫 Banned Words (like "turkey", "skateboard", "sunset").',
+        'You have 35 seconds to make the AI draw the scene WITHOUT typing any banned word—use synonyms, clues, or kid-friendly clue chips (e.g., "gobbler bird on a wooden board with wheels at golden dusk")!',
+        'The AI image appears heavily blurred and slowly sharpens—everyone else races to BUZZ IN and guess the secret phrase! Faster guesses win bigger points.',
       ],
     },
     {

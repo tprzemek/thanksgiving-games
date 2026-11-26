@@ -752,9 +752,27 @@ const Games = (() => {
       render();
     }
 
+    function getBannedHits(text) {
+      const lower = (text || '').toLowerCase();
+      const banned = target.banned || [];
+      return banned.filter(w => {
+        const stem = w.toLowerCase().replace(/ies$/, 'y').replace(/s$/, '');
+        return lower.includes(w.toLowerCase()) || (stem.length >= 4 && lower.includes(stem));
+      });
+    }
+
+    function stripBanned(text) {
+      let clean = text || '';
+      for (const w of (target.banned || [])) {
+        const stem = w.replace(/ies$/, '(?:y|ies)').replace(/s$/, 's?');
+        clean = clean.replace(new RegExp(stem, 'ig'), '');
+      }
+      return clean.replace(/\s+/g, ' ').trim();
+    }
+
     function startPromptTimer() {
       cleanup();
-      timeLeft = 25;
+      timeLeft = 35;
       phase = 'prompt';
       broadcast();
       timer = setInterval(() => {
@@ -762,7 +780,7 @@ const Games = (() => {
         if (timeLeft <= 5 && timeLeft > 0) SoundFX.tick(0.75);
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
-          generateAndGuess();
+          generateAndGuess(true);
           return;
         }
         const el = document.getElementById('panic-timer');
@@ -774,9 +792,15 @@ const Games = (() => {
       render();
     }
 
-    function generateAndGuess() {
+    function generateAndGuess(fromTimeout = false) {
+      if (!fromTimeout && getBannedHits(userPrompt).length > 0) {
+        SoundFX.wrong();
+        return;
+      }
       cleanup();
-      const finalPrompt = userPrompt.trim() || target.hints.join(' ');
+      const cleaned = stripBanned(userPrompt);
+      const finalPrompt = cleaned || target.hints.join(' ');
+      userPrompt = finalPrompt;
       artResult = AIArt.renderDataURL(finalPrompt, 440, 300);
       blurPx = 26;
       buzzedPlayer = null;
@@ -806,12 +830,12 @@ const Games = (() => {
       if (phase === 'pick') {
         root.innerHTML = `
           <div class="stack fade-in">
-            <h2>🎨 Prompt Panic!</h2>
-            <p class="muted small" style="margin:0;">One artist gets a wacky secret phrase and 25 seconds to prompt the AI. Everyone else races to buzz in as the artwork unblurs!</p>
+            <h2>🎨 Prompt Panic! (AI Taboo)</h2>
+            <p class="muted small" style="margin:0;">Think <strong>Taboo + Pictionary + AI</strong>! The artist gets a secret phrase and 35 seconds to describe it to the AI <strong>WITHOUT typing any of the Banned Words</strong>. Then everyone races to buzz in as the artwork unblurs!</p>
             <div class="card center stack">
               <div style="font-size:3rem;">${artist.avatar}</div>
               <h3>Up Next as AI Artist: ${esc(artist.name)}</h3>
-              <p class="small muted" style="margin:0;">Hand the phone to <strong>${esc(artist.name)}</strong> (everyone else look away!).</p>
+              <p class="small muted" style="margin:0;">Hand the screen to <strong>${esc(artist.name)}</strong> (everyone else look away so you don't see the secret phrase!).</p>
               <button class="btn btn-primary btn-lg" id="panic-reveal-secret">👀 I'm ${esc(artist.name)} — Show Secret Phrase</button>
             </div>
           </div>`;
@@ -823,39 +847,64 @@ const Games = (() => {
       }
 
       if (phase === 'prompt') {
+        const hits = getBannedHits(userPrompt);
+        const safeChips = GAME_DATA.promptPanic.quickChips.filter(c => getBannedHits(c).length === 0);
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
               <div><span class="tag tag-gold">SECRET PHRASE (DON'T SAY ALOUD!)</span></div>
               <div class="timer-box ${timeLeft <= 6 ? 'urgent' : ''}" id="panic-timer">${fmtTime(timeLeft)}</div>
             </div>
-            <div class="card-warm center">
+            <div class="card-warm center stack-sm">
               <h2 style="margin:0;color:var(--pumpkin);">"${esc(target.phrase)}"</h2>
+              <div class="row" style="justify-content:center;gap:6px;">
+                <span class="xs" style="font-weight:800;color:var(--cranberry);">🚫 BANNED WORDS:</span>
+                ${(target.banned || []).map(w => `<span class="tag tag-new">🚫 ${esc(w)}</span>`).join('')}
+              </div>
+              <p class="xs muted" style="margin:0;">Make the AI draw the secret phrase using <strong>synonyms, clues, or descriptions</strong>—you CANNOT type the red banned words!</p>
             </div>
             <div class="card stack">
-              <label class="small"><strong>Type your AI image prompt fast!</strong> (Or tap kid-friendly chips below):</label>
-              <textarea class="textarea" id="panic-input" placeholder="Describe the scene so the AI paints it...">${esc(userPrompt)}</textarea>
-              <div class="chip-wrap">
-                ${GAME_DATA.promptPanic.quickChips.map(c => `<button type="button" class="chip" data-pc="${c}">+ ${c}</button>`).join('')}
+              <label class="small"><strong>Describe it creatively without the banned words!</strong></label>
+              <textarea class="textarea" id="panic-input" placeholder="Example: instead of 'turkey', type 'giant feathered gobbler bird'...">${esc(userPrompt)}</textarea>
+              <div id="panic-warn" class="xs" style="color:var(--cranberry);font-weight:800;min-height:18px;">
+                ${hits.length ? `🚫 Banned word spotted: ${hits.map(w => `"${w}"`).join(', ')} — swap it for a creative clue!` : ''}
               </div>
-              <button class="btn btn-primary btn-lg" id="panic-gen">🎨 Generate AI Art Now!</button>
+              <div class="xs muted"><strong>Kid-Friendly Clue Chips</strong> (tap to add!):</div>
+              <div class="chip-wrap">
+                ${safeChips.slice(0, 18).map(c => `<button type="button" class="chip" data-pc="${esc(c)}">+ ${esc(c)}</button>`).join('')}
+              </div>
+              <button class="btn btn-primary btn-lg" id="panic-gen" ${hits.length || !userPrompt.trim() ? 'disabled' : ''}>🎨 Generate AI Art Now!</button>
             </div>
           </div>`;
 
         const inp = document.getElementById('panic-input');
-        inp.oninput = (e) => { userPrompt = e.target.value; };
+        const warn = document.getElementById('panic-warn');
+        const genBtn = document.getElementById('panic-gen');
+        const syncValidity = () => {
+          const curHits = getBannedHits(userPrompt);
+          if (curHits.length) {
+            warn.textContent = `🚫 Banned word spotted: ${curHits.map(w => `"${w}"`).join(', ')} — describe it another way!`;
+            genBtn.disabled = true;
+          } else {
+            warn.textContent = '';
+            genBtn.disabled = !userPrompt.trim();
+          }
+        };
+        inp.oninput = (e) => { userPrompt = e.target.value; syncValidity(); };
         root.querySelectorAll('[data-pc]').forEach(b => {
           b.onclick = () => {
             userPrompt = (userPrompt.trim() ? userPrompt.trim() + ' ' : '') + b.dataset.pc;
             inp.value = userPrompt;
+            SoundFX.pop();
+            syncValidity();
           };
         });
-        document.getElementById('panic-gen').onclick = generateAndGuess;
+        genBtn.onclick = () => generateAndGuess(false);
         return;
       }
 
       if (phase === 'guess') {
-        const imgUrl = liveCfg.liveImages ? LiveAI.getLiveImageUrl(userPrompt || target.phrase, artistIdx + 7) : artResult.dataUrl;
+        const imgUrl = liveCfg.liveImages ? LiveAI.getLiveImageUrl(userPrompt || target.hints.join(' '), artistIdx + 7) : artResult.dataUrl;
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">

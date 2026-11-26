@@ -40,30 +40,33 @@ const GAME_DATA = {
     ],
   },
 
-  // GAME 2: PROMPT PANIC! (Speed AI Art Showdown)
+  // GAME 2: PROMPT PANIC! (Taboo Speed AI Art Showdown)
   promptPanic: {
     targets: [
-      { phrase: 'A turkey riding a skateboard at sunset', hints: ['turkey', 'skateboard', 'sunset'] },
-      { phrase: 'A pilgrim astronaut eating pumpkin pie on Mars', hints: ['pilgrim', 'astronaut', 'pie', 'space'] },
-      { phrase: 'A robot chef juggling cranberries in the kitchen', hints: ['robot', 'chef', 'cranberries', 'kitchen'] },
-      { phrase: 'A cat wearing a royal crown guarding a gravy boat', hints: ['cat', 'crown', 'gravy'] },
-      { phrase: 'A dragon wearing sunglasses on a sunny beach', hints: ['dragon', 'sunglasses', 'beach'] },
-      { phrase: 'A dog wearing a wizard hat in a snowy mountain', hints: ['dog', 'wizard', 'snow'] },
-      { phrase: 'A UFO beaming up a giant pumpkin pie at night', hints: ['ufo', 'pie', 'night'] },
-      { phrase: 'A turkey playing guitar under fireworks in the city', hints: ['turkey', 'guitar', 'fireworks', 'city'] },
-      { phrase: 'A pixel art pumpkin wearing a pirate buckle hat', hints: ['pixel', 'pumpkin', 'hat'] },
-      { phrase: 'A superhero fox flying over a rainbow forest', hints: ['fox', 'cape', 'rainbow', 'forest'] },
-      { phrase: 'Two turkeys celebrating with balloons at a volcano', hints: ['two', 'turkey', 'balloons', 'volcano'] },
-      { phrase: 'A neon cyberpunk robot eating pizza underwater', hints: ['neon', 'robot', 'pizza', 'underwater'] },
-      { phrase: 'A vintage photo of a pilgrim riding a rocket', hints: ['vintage', 'pilgrim', 'rocket'] },
-      { phrase: 'Three tiny pumpkins glowing with candles at night', hints: ['three', 'pumpkin', 'candles', 'night'] },
-      { phrase: 'A grandma chef winning a gold trophy in autumn woods', hints: ['grandma', 'trophy', 'forest'] },
-      { phrase: 'A skateboard dog delivering a pumpkin pie in the rain', hints: ['skateboard', 'dog', 'pie', 'rain'] },
+      { phrase: 'A turkey riding a skateboard at sunset', banned: ['turkey', 'skateboard', 'sunset'], hints: ['gobbler bird', 'wooden board with wheels', 'golden dusk'] },
+      { phrase: 'A pilgrim astronaut eating pumpkin pie on Mars', banned: ['pilgrim', 'astronaut', 'pumpkin', 'pie', 'mars'], hints: ['1621 settler', 'space helmet', 'whipped cream dessert', 'red planet'] },
+      { phrase: 'A robot chef juggling cranberries in the kitchen', banned: ['robot', 'chef', 'cranberries', 'kitchen'], hints: ['metal machine', 'tall white hat', 'red berries', 'dinner stove'] },
+      { phrase: 'A cat wearing a royal crown guarding a gravy boat', banned: ['cat', 'crown', 'gravy'], hints: ['meow feline', 'gold king headpiece', 'brown sauce pouring'] },
+      { phrase: 'A dragon wearing sunglasses on a sunny beach', banned: ['dragon', 'sunglasses', 'beach'], hints: ['fire breather', 'dark shades', 'sandy ocean shore'] },
+      { phrase: 'A dog wearing a wizard hat in a snowy mountain', banned: ['dog', 'wizard', 'snow', 'mountain'], hints: ['barking pup', 'pointy magic hat', 'frosty winter peaks'] },
+      { phrase: 'A UFO beaming up a giant pumpkin pie at night', banned: ['ufo', 'pumpkin', 'pie', 'night'], hints: ['flying saucer', 'huge orange dessert', 'crescent starry sky'] },
+      { phrase: 'A turkey playing guitar under fireworks in the city', banned: ['turkey', 'guitar', 'fireworks', 'city'], hints: ['gobbler bird', 'rockstar strings', 'sky sparks', 'tall buildings'] },
+      { phrase: 'A pixel art pumpkin wearing a buckle hat', banned: ['pixel', 'pumpkin', 'buckle', 'hat'], hints: ['blocky 8-bit', 'carved orange gourd', 'tall black settler cap'] },
+      { phrase: 'A superhero fox flying over a rainbow forest', banned: ['superhero', 'fox', 'rainbow', 'forest'], hints: ['cloak hero', 'bushy tail critter', 'seven colors arch', 'autumn trees'] },
+      { phrase: 'Two turkeys celebrating with balloons at a volcano', banned: ['turkey', 'balloons', 'volcano'], hints: ['pair of gobblers', 'floating helium', 'molten lava'] },
+      { phrase: 'A neon cyberpunk robot eating pizza underwater', banned: ['neon', 'robot', 'pizza', 'underwater'], hints: ['glowing synth', 'metal android', 'pepperoni cheese slice', 'deep sea bubbles'] },
+      { phrase: 'A vintage photo of a pilgrim riding a rocket', banned: ['vintage', 'pilgrim', 'rocket'], hints: ['old sepia', 'mayflower settler', 'blastoff shuttle'] },
+      { phrase: 'Three tiny pumpkins glowing with candles at night', banned: ['pumpkin', 'candles', 'night'], hints: ['3 mini gourds', 'flickering wax flame', 'crescent starry sky'] },
+      { phrase: 'A grandma chef winning a gold trophy in autumn woods', banned: ['grandma', 'chef', 'trophy', 'woods'], hints: ['nana baker', 'first place prize', 'falling leaves forest'] },
+      { phrase: 'A skateboard dog delivering a pumpkin pie in the rain', banned: ['skateboard', 'dog', 'pumpkin', 'pie', 'rain'], hints: ['wheels board', 'good boy canine', 'whipped cream pastry', 'stormy drizzle'] },
     ],
     quickChips: [
-      'turkey', 'pilgrim', 'pumpkin pie', 'gravy boat', 'robot', 'dog', 'cat', 'dragon', 'UFO', 'astronaut',
-      'skateboard', 'sunglasses', 'crown', 'wizard hat', 'guitar', 'rocket', 'fireworks', 'rainbow',
-      'in space', 'on a beach', 'in snow', 'in kitchen', 'at sunset', 'pixel art', 'neon', 'vintage'
+      'gobbler bird', '1621 settler', 'whipped cream pastry', 'orange gourd', 'brown sauce',
+      'metal android', 'barking pup', 'meow feline', 'fire breather', 'flying saucer', 'space helmet',
+      'wooden board with wheels', 'dark shades', 'king gold headpiece', 'pointy magic hat', 'rockstar strings',
+      'blastoff shuttle', 'red berries', 'first place prize', 'floating helium', 'flickering flame',
+      'red planet cosmos', 'sandy shore', 'frosty peaks', 'molten lava', 'tall urban buildings',
+      'deep sea bubbles', 'golden dusk', 'crescent starry sky', 'blocky 8-bit', 'glowing synth', 'old sepia'
     ]
   },
 

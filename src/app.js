@@ -135,8 +135,16 @@ const App = (() => {
       title: 'Prompt Clone!',
       tag: 'NEW · 3-MIN CHALLENGE',
       tagClass: 'tag-new',
+      players: '2–12+ players',
+      time: '3–5 min/round',
+      devices: 'Best with phones (QR) or pass-and-play',
       desc: 'Everyone studies the same AI image and writes a prompt to recreate it. AI regenerates every player\'s image and grades resemblance %!',
-      meta: 'Thinking · Creativity · All Ages',
+      meta: '2–12+ players · 3–5 min · All Ages',
+      rules: [
+        'Host shows the Target AI Image (or uploads any custom photo) and starts the 1, 2, or 3-minute timer.',
+        'Every player scans the QR code on their phone (or passes the Host device) to type an AI prompt describing every detail they see—subject, setting, props, colors, and art style.',
+        'When time is up, tap "Generate Images & Grade All": the AI paints each player\'s prompt side-by-side with the original and awards 0–100% resemblance scores + points!',
+      ],
     },
     {
       key: 'turkeyCourt',
@@ -144,8 +152,16 @@ const App = (() => {
       title: 'Turkey Court',
       tag: 'AI JUDGE + TWISTS',
       tagClass: 'tag-gold',
+      players: '2–12 players',
+      time: '2–3 min/case',
+      devices: '1 Host screen (+ optional phone jury)',
       desc: 'Defend yourself against hilarious Thanksgiving charges while the AI Judge slams live mid-speech OBJECTION plot twists!',
-      meta: 'Improv · Quick Reaction · Laughs',
+      meta: '2–12 players · 2–3 min · Improv',
+      rules: [
+        'Pick 2 defendants (or adult-kid teams) to face a funny Thanksgiving charge.',
+        'Each side gets 25 seconds to argue out loud—halfway through, the AI Judge slams a surprise OBJECTION plot twist you must react to on the spot!',
+        'Other players can vote or drop twists from their QR phones. The AI Judge scores Creativity, Logic, and Quick Recovery.',
+      ],
     },
     {
       key: 'promptPanic',
@@ -153,8 +169,16 @@ const App = (() => {
       title: 'Prompt Panic!',
       tag: 'SPEED ART BUZZER',
       tagClass: 'tag-kid',
+      players: '3–10 players',
+      time: '2–3 min/round',
+      devices: 'Host screen + QR buzzers (or table buzzers)',
       desc: '25 seconds to prompt the AI from a wacky secret phrase—then everyone races to buzz in as the artwork slowly unblurs!',
-      meta: 'Creativity · Reflexes · Teams',
+      meta: '3–10 players · 2–3 min · Fast Reflexes',
+      rules: [
+        'One player/team peeks at the secret Thanksgiving phrase and has 25 seconds to type (or tap kid-friendly chips) to make the AI draw it.',
+        'The AI image appears heavily blurred and slowly sharpens over 20 seconds.',
+        'Everyone else races to hit BUZZ IN (on their own phone or the Host screen) and shout the secret phrase—earlier guesses win bigger points!',
+      ],
     },
     {
       key: 'gobbleBomb',
@@ -162,8 +186,16 @@ const App = (() => {
       title: 'Pass the Gobble Bomb',
       tag: 'ONE-PHONE HOT POTATO',
       tagClass: 'tag-new',
+      players: '3–12 players',
+      time: '1–2 min/round',
+      devices: '1 phone passed around the table',
       desc: 'Pass one phone around the table, shout a story sentence using the twist word, and pass before the hidden turkey fuse blows!',
-      meta: 'Fast · Loud · Illustrated Finale',
+      meta: '3–12 players · 1–2 min · 1 Phone',
+      rules: [
+        'Choose Chill, Chaos, or Lightning fuse speed and tap "Light the Turkey Fuse!" (nobody knows the exact timer!).',
+        'Whoever holds the phone says the next sentence of the story using the flashing Twist Word (plus any surprise Modifier like Rhyme or Whisper!) and smashes PASS.',
+        'When the Gobble Bomb explodes, everyone else scores +100 Survivor Points and the AI builds an illustrated Storybook of what you created!',
+      ],
     },
     {
       key: 'spotTheBot',
@@ -171,8 +203,16 @@ const App = (() => {
       title: 'Spot the Bot',
       tag: 'DINNER TABLE EDITION',
       tagClass: 'tag-gold',
+      players: '3–10 players',
+      time: '3–4 min/round',
+      devices: 'Best with phones (QR) or pass-and-play',
       desc: 'Everyone submits a witty answer and AI sneaks in fake ones. Race to slam "THAT\'S A BOT!"—or score points for fooling the table!',
-      meta: 'Bluffing · Quick Reaction · Phones',
+      meta: '3–10 players · 3–4 min · Bluffing',
+      rules: [
+        'Read the dinner-table prompt aloud. Every player secretly submits a funny 1-sentence answer via their QR phone or pass-and-play.',
+        'The AI mixes 1–2 convincing fake Bot answers into the shuffled pile and reveals them one by one.',
+        'Race to slam "THAT\'S A BOT!" if you think it\'s AI! Fast correct catches score big; false alarms give the human author a +150 Fooler Bonus!',
+      ],
     },
     {
       key: 'feastShowdown',
@@ -180,28 +220,67 @@ const App = (() => {
       title: 'Feast Showdown',
       tag: 'AGE-BALANCED QUIZ',
       tagClass: 'tag-kid',
+      players: '2–12+ players',
+      time: '2–5 min',
+      devices: 'Host screen + QR buzzers (or table buzzers)',
       desc: '3 fast mini-modes: Lightning Buzz (auto-scaled Kid/Teen/Adult trivia), Absurd Dish Pitch Battle, and 5-second Rapid-Fire Chain!',
-      meta: 'Trivia · Creativity · Fair for Kids',
+      meta: '2–12+ players · 2–5 min · Fair for Kids',
+      rules: [
+        'Lightning Buzz: Pick Kid, Teen, or Adult difficulty so everyone competes fairly—first to buzz in gets to answer (+200 pts).',
+        'Pitch Battle: AI invents a wild fusion dish (like Pumpkin Pie Sushi)—20 seconds to pitch a commercial jingle, then vote for the funniest!',
+        'Rapid-Fire Chain: 5 seconds per player around the table to shout an item in the category without repeating!',
+      ],
     },
   ];
 
   function renderHub() {
     const root = getStage();
     const sorted = [...players].sort((a, b) => b.score - a.score);
+    const remoteCount = players.filter(p => p.remote).length;
     root.innerHTML = `
       <div class="stack fade-in">
         <div class="hub-header">
           <div>
             <h1>Thanksgiving AI Game Night</h1>
-            <p class="hub-sub">Six fast, laugh-out-loud table games built for kids & adults. Play right on this device or let everyone join on their phones by scanning the QR code.</p>
+            <p class="hub-sub">Six interactive table games for <strong>2–12+ players</strong> (kids & adults). Play on one shared device or have everyone join on their own phone by scanning the QR barcode.</p>
           </div>
-          <button class="btn btn-primary" id="hub-open-qr">📱 Invite Phones via QR</button>
+          <div class="row">
+            <button class="btn" id="hub-open-guide">📖 How to Play</button>
+            <button class="btn btn-primary" id="hub-open-qr">📱 Scan QR to Join</button>
+          </div>
         </div>
+
+        <details class="card-warm" open>
+          <summary style="cursor:pointer;font-weight:800;font-size:0.98rem;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span>📋 Quick Start: How Many Can Play &amp; How to Join (30-Second Setup)</span>
+            <span class="xs muted">Tap to hide/show</span>
+          </summary>
+          <div class="stack-sm" style="margin-top:12px;">
+            <div class="grid-3">
+              <div class="card" style="padding:12px;">
+                <strong class="small">👥 2 to 12+ Players</strong>
+                <p class="xs muted" style="margin:4px 0 0;">Built for kids (6+) and adults together. Best with <strong>3–8 players</strong>; for bigger tables (9+), pair <strong>1 Kid + 1 Adult</strong> on the same team!</p>
+              </div>
+              <div class="card" style="padding:12px;">
+                <strong class="small">📺 Step 1: Pick 1 Host Screen</strong>
+                <p class="xs muted" style="margin:4px 0 0;">Keep this page open on one phone, iPad, laptop, or TV that everyone can see. Turn up volume for the AI Voice Host &amp; sound effects.</p>
+              </div>
+              <div class="card" style="padding:12px;">
+                <strong class="small">📱 Step 2: Scan QR (or Pass 1 Phone)</strong>
+                <p class="xs muted" style="margin:4px 0 0;">Tap <strong>📱 QR</strong> above. Guests point their phone's <strong>Camera app</strong> at the QR barcode, tap the link, and enter their name. No app or login needed!</p>
+              </div>
+            </div>
+            <div class="row-between">
+              <span class="xs muted">💡 <strong>No extra phones?</strong> Just add names below and play 100% Pass-and-Play on this single screen.</span>
+              <button class="btn btn-sm" id="qs-full-guide">📖 Full Rules &amp; Setup Guide</button>
+            </div>
+          </div>
+        </details>
 
         <div class="card stack-sm">
           <div class="row-between">
-            <h3>👨‍👩‍👧‍👦 Players at the Table (${players.length})</h3>
-            <span class="xs muted">Scores carry across all 6 games!</span>
+            <h3>👨‍👩‍👧‍👦 Players at the Table (${players.length}${remoteCount ? ` · ${remoteCount} on 📱` : ''})</h3>
+            <span class="xs muted">Replace demo names or let guests scan QR to auto-add!</span>
           </div>
           <div class="roster-bar">
             ${players.map(p => `
@@ -238,7 +317,7 @@ const App = (() => {
                 <p class="small muted" style="margin:0;">${g.desc}</p>
               </div>
               <div class="row-between" style="margin-top:6px;">
-                <span class="xs muted">${g.meta}</span>
+                <span class="xs muted">👥 ${g.meta}</span>
                 <strong style="color:var(--pumpkin);font-size:0.9rem;">Play →</strong>
               </div>
             </button>
@@ -257,6 +336,8 @@ const App = (() => {
       </div>`;
 
     document.getElementById('hub-open-qr').onclick = openQRModal;
+    document.getElementById('hub-open-guide').onclick = openGuideModal;
+    document.getElementById('qs-full-guide').onclick = openGuideModal;
     const lb = document.getElementById('hub-view-lb');
     if (lb) lb.onclick = openLeaderboardModal;
 
@@ -278,10 +359,80 @@ const App = (() => {
     });
   }
 
-  // ---- Modals (QR Code Room, Leaderboard, AI Settings) ----
+  // ---- Modals (How to Play Guide, QR Code Room, Leaderboard, AI Settings) ----
   function closeModal() {
     const m = document.getElementById('modal-root');
     if (m) m.innerHTML = '';
+  }
+
+  function openGuideModal() {
+    const m = document.getElementById('modal-root');
+    m.innerHTML = `
+      <div class="modal-backdrop" id="modal-bg">
+        <div class="modal stack" style="max-width:620px;">
+          <div class="row-between">
+            <h2>📖 How to Play &amp; Setup Guide</h2>
+            <button class="btn btn-sm" id="modal-close">✕</button>
+          </div>
+
+          <div class="card-warm stack-sm">
+            <h3>👥 How Many People Can Play?</h3>
+            <ul class="small" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;">
+              <li><strong>Any group from 2 to 12+ players</strong> (ages 6 to 99!).</li>
+              <li><strong>Sweet spot:</strong> 3–8 individual players.</li>
+              <li><strong>Big Thanksgiving table (9+ people)?</strong> Pair up as <strong>1 Kid + 1 Adult</strong> teams (1 phone per pair!)—kids' wild creativity + adults' typing speed is hilarious!</li>
+              <li><strong>Age tags:</strong> Mark players as <em>Kid</em>, <em>Teen</em>, or <em>Adult</em> so Feast Showdown trivia scales fairly.</li>
+            </ul>
+          </div>
+
+          <div class="card stack-sm">
+            <h3>⚙️ 3-Step Setup (Zero App Downloads)</h3>
+            <ol class="small" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px;">
+              <li><strong>Choose 1 Host Screen:</strong> Open this page on an iPad, laptop, TV, or your own phone where everyone can glance at the prompts &amp; images.</li>
+              <li><strong>Remove demo names or keep/edit them:</strong> Tap <strong>×</strong> next to any starter player name you don't need, or add players right in the roster box.</li>
+              <li><strong>Optional AI Boost (⚙️ icon):</strong> Everything works <strong>100% free out of the box</strong>. Want photorealistic regenerated AI art in <em>Prompt Clone!</em> &amp; <em>Prompt Panic!</em>? Tap <strong>⚙️</strong> and check <strong>Enable Live Photorealistic AI Images</strong>.</li>
+            </ol>
+          </div>
+
+          <div class="card stack-sm">
+            <h3>📱 How Guests Participate (Scanning the QR Barcode)</h3>
+            <ol class="small" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px;">
+              <li>On the Host screen, tap <strong>📱 QR</strong> in the top bar.</li>
+              <li>Each guest opens their phone's normal <strong>Camera app</strong> (iPhone or Android) and points it at the square QR barcode.</li>
+              <li>Tap the link banner that pops up on screen (works over home Wi-Fi <em>or</em> cellular 5G—no same-Wi-Fi requirement!).</li>
+              <li>Type your <strong>Name</strong>, choose <strong>Kid / Teen / Adult</strong>, pick an emoji avatar, and tap <strong>Join Game Night!</strong> You'll automatically appear on the Host roster.</li>
+              <li><strong>Keep your browser tab open:</strong> Your phone automatically turns into your live controller—a secret prompt box in <em>Prompt Clone!</em>, a giant red <strong>BUZZ IN</strong> button in trivia &amp; <em>Prompt Panic!</em>, a <strong>"🤖 THAT'S A BOT!"</strong> slammer in <em>Spot the Bot</em>, or Jury Vote buttons in <em>Turkey Court</em>.</li>
+            </ol>
+            <p class="xs muted" style="margin:4px 0 0;">💡 <strong>Prefer 1 phone only?</strong> Skip the QR code—every single game has built-in Pass-the-Phone privacy screens and split-screen buzzers on the Host device!</p>
+          </div>
+
+          <div class="stack-sm">
+            <h3>🎲 Game-by-Game Rules</h3>
+            ${GAMES_META.map(g => `
+              <details class="card" style="padding:12px;">
+                <summary style="cursor:pointer;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                  <span>${g.icon} ${g.title}</span>
+                  <span class="xs muted">${g.players} · ${g.time}</span>
+                </summary>
+                <div class="xs muted" style="margin:6px 0;">📱 ${g.devices}</div>
+                <ol class="small" style="margin:4px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px;">
+                  ${g.rules.map(r => `<li>${esc(r)}</li>`).join('')}
+                </ol>
+              </details>
+            `).join('')}
+          </div>
+
+          <div class="row-between">
+            <button class="btn" id="guide-open-qr">📱 Open QR Barcode</button>
+            <button class="btn btn-primary" id="guide-done">Got It — Let's Play!</button>
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById('modal-close').onclick = closeModal;
+    document.getElementById('guide-done').onclick = closeModal;
+    document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
+    document.getElementById('guide-open-qr').onclick = () => { closeModal(); openQRModal(); };
   }
 
   function openQRModal() {
@@ -289,11 +440,12 @@ const App = (() => {
     const code = RoomSync.getRoomCode();
     const joinUrl = RoomSync.getJoinUrl(customShareBase);
     const mode = RoomSync.getMode();
+    const remotePlayers = players.filter(p => p.remote);
     const modeLabel = mode === 'lan'
       ? '🟢 Local Wi-Fi Server Active (Fastest!)'
       : mode === 'cloud'
       ? '🟢 Live Cloud Room Active (Works on Wi-Fi & 5G!)'
-      : '🟡 Preview / Local Mode (Host on Wi-Fi or GitHub Pages for phones to scan)';
+      : '🟡 Preview / Local Mode (Open the live GitHub Pages link for phones to scan)';
 
     let qrSvg = '';
     try { qrSvg = QR.toSVG(joinUrl, { fg: '#2B1E16', bg: '#FFFFFF', quiet: 3 }); }
@@ -303,14 +455,25 @@ const App = (() => {
       <div class="modal-backdrop" id="modal-bg">
         <div class="modal stack">
           <div class="row-between">
-            <h2>📱 Join on Your Phone!</h2>
+            <h2>📱 Scan QR Barcode to Join!</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
           <div class="center stack-sm">
             <div class="qr-box">${qrSvg}</div>
             <div class="mono" style="font-size:1.5rem;font-weight:900;letter-spacing:0.14em;color:var(--pumpkin);">ROOM: ${esc(code)}</div>
             <div class="xs muted">${modeLabel}</div>
-            <div class="xs mono muted" style="word-break:break-all;background:var(--surface-alt);padding:6px 10px;border-radius:8px;">${esc(joinUrl)}</div>
+            ${remotePlayers.length
+              ? `<div class="xs" style="color:var(--sage);font-weight:700;">✅ Joined on phones (${remotePlayers.length}): ${remotePlayers.map(p => `${p.avatar} ${esc(p.name)}`).join(', ')}</div>`
+              : `<div class="xs muted">Waiting for phones to scan in… (2–12+ players supported!)</div>`}
+          </div>
+
+          <div class="card-warm stack-sm">
+            <strong class="small">How Guests Join in 10 Seconds:</strong>
+            <ol class="xs" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px;">
+              <li>Open your phone's <strong>Camera app</strong> (iPhone or Android).</li>
+              <li>Point at the QR barcode above &amp; tap the pop-up link (no app download!).</li>
+              <li>Type your name, pick <strong>Kid / Teen / Adult</strong>, and tap <strong>Join</strong>.</li>
+            </ol>
           </div>
 
           <div class="row">
@@ -318,18 +481,17 @@ const App = (() => {
             <button class="btn" id="qr-new-room">🔄 New Code</button>
           </div>
 
-          <div class="card-warm stack-sm">
-            <strong class="xs">Custom Hosted URL (optional — updates QR immediately):</strong>
-            <div class="row">
-              <input class="input" id="qr-custom-base" placeholder="https://your-site.github.io/thanksgiving-games" value="${esc(customShareBase)}" style="font-size:0.85rem;padding:8px 10px;" />
-              <button class="btn btn-sm" id="qr-apply-base">Update QR</button>
+          <details class="xs muted">
+            <summary style="cursor:pointer;font-weight:600;">Advanced: Direct URL, Custom Host, or Test Phone View</summary>
+            <div class="stack-sm" style="margin-top:8px;">
+              <div class="xs mono muted" style="word-break:break-all;background:var(--surface-alt);padding:6px 10px;border-radius:8px;">${esc(joinUrl)}</div>
+              <div class="row">
+                <input class="input" id="qr-custom-base" placeholder="Custom hosted URL (optional)" value="${esc(customShareBase)}" style="font-size:0.85rem;padding:8px 10px;" />
+                <button class="btn btn-sm" id="qr-apply-base">Update QR</button>
+              </div>
+              <button class="btn btn-sm" id="qr-test-phone">📱 Preview Guest Phone Controller</button>
             </div>
-          </div>
-
-          <div class="row-between">
-            <span class="xs muted">Want to test what guests see on their phone?</span>
-            <button class="btn btn-sm" id="qr-test-phone">📱 Open Phone View</button>
-          </div>
+          </details>
         </div>
       </div>`;
 
@@ -786,6 +948,8 @@ const App = (() => {
         broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
         if (!currentGameKey) renderHub();
         else if (currentGame && currentGame.render) currentGame.render();
+        // Live-refresh QR modal if currently open so Host sees guests pop in immediately
+        if (document.getElementById('qr-copy')) openQRModal();
       } else if (msg.type === 'ACTION' && currentGame && currentGame.onPhoneAction) {
         currentGame.onPhoneAction(msg);
       }
@@ -802,6 +966,7 @@ const App = (() => {
           </button>
           <div class="topbar-actions">
             <button class="icon-pill qr-pill" id="btn-qr">📱 QR · ${esc(code)}</button>
+            <button class="icon-pill" id="btn-guide" title="How to Play & Setup">📖 Guide</button>
             <button class="icon-pill" id="btn-leaderboard">🏆 Scores</button>
             <button class="icon-pill" id="btn-voice" title="Toggle AI Voice Host">🗣️ Voice</button>
             <button class="icon-pill" id="btn-sound" title="Mute Sound Effects">🔊</button>
@@ -814,6 +979,7 @@ const App = (() => {
 
     document.getElementById('btn-home').onclick = () => { SoundFX.pop(); openGame(null); };
     document.getElementById('btn-qr').onclick = openQRModal;
+    document.getElementById('btn-guide').onclick = openGuideModal;
     document.getElementById('btn-leaderboard').onclick = openLeaderboardModal;
     document.getElementById('btn-ai').onclick = openSettingsModal;
     document.getElementById('btn-voice').onclick = () => {
@@ -831,7 +997,7 @@ const App = (() => {
 
   const publicApi = {
     getPlayers, addPlayer, removePlayer, addScore,
-    getStage, broadcastHostState, openQRModal, openGame,
+    getStage, broadcastHostState, openQRModal, openGuideModal, openGame,
   };
 
   if (typeof document !== 'undefined') {

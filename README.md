@@ -1,31 +1,46 @@
 # 🦃 Thanksgiving AI Game Night
 
-Six fast, multi-generational interactive AI games for kids and adults — playable on **one phone** (pass-and-play) OR across **everyone's phones via scannable QR code**!
+Six fast, multi-generational interactive AI games for **2 to 12+ players** (ages 6 to 99) — playable on **one shared device** OR across **everyone's phones by scanning a QR barcode**!
 
-## The 6 Included Games
+---
 
-1. **🔍 Prompt Clone! (Reverse-Prompt Challenge)** — Everyone studies the same AI-generated image and gets 1–3 minutes to write an AI prompt to recreate it as closely as possible. The AI then regenerates each participant's image side-by-side and grades every submission on visual & detail resemblance (0–100%)!
-2. **⚖️ Turkey Court** — Two players argue a hilarious Thanksgiving case while the AI Judge slams a live mid-speech **OBJECTION! Plot Twist** and scores Creativity, Logic, and Recovery.
-3. **🎨 Prompt Panic!** — One artist gets 25 seconds to prompt the AI from a wacky secret phrase; everyone else races to buzz in as the artwork slowly unblurs.
-4. **💣 Pass the Gobble Bomb** — Hot-potato AI story passed around the table with an accelerating hidden fuse, mandatory twist words, surprise modifiers, and an AI-illustrated storybook finale.
-5. **🤖 Spot the Bot: Dinner Table Edition** — Everyone submits a secret witty answer, the AI slips in convincing fake answers, and everyone races to slam **"THAT'S A BOT!"**.
-6. **🏆 Feast Showdown** — Age-balanced family game show with **Kid / Teen / Adult** scaled Lightning Buzz trivia, absurd fusion-dish Pitch Battles, and 5-second Rapid-Fire Chains.
+## 👥 How Many People Can Play?
+- **2 to 12+ players** across all 6 games (sweet spot: **3–8 individual players**).
+- **Big Thanksgiving table (9+ guests)?** Pair **1 Kid + 1 Adult** per team (1 phone per pair!) — kids' wild imagination + adults' speed makes every round hilarious.
+- **Fair for every age:** Each player selects **Kid**, **Teen**, or **Adult** when joining so trivia difficulty balances automatically on the shared scoreboard.
 
-## Ways to Play
+| Game | Players | Round Length | Best Device Setup |
+| --- | --- | --- | --- |
+| 🔍 **Prompt Clone!** | 2–12+ | 3–5 min | Phones via QR (or pass-and-play) |
+| ⚖️ **Turkey Court** | 2–12 | 2–3 min | 1 Host screen + optional phone jury |
+| 🎨 **Prompt Panic!** | 3–10 | 2–3 min | Host screen + QR or table buzzers |
+| 💣 **Pass the Gobble Bomb** | 3–12 | 1–2 min | 1 phone passed around the table |
+| 🤖 **Spot the Bot** | 3–10 | 3–4 min | Phones via QR (or pass-and-play) |
+| 🏆 **Feast Showdown** | 2–12+ | 2–5 min | Host screen + QR or table buzzers |
 
-### 1. Live Multi-Phone Play via Hosted URL (GitHub Pages / Netlify)
-Host `index.html` on any static HTTPS host (like GitHub Pages). Open it on the Host screen (TV/laptop/tablet/phone), tap **📱 QR**, and have everyone scan the QR code to join on their own phone — works over Wi-Fi or cellular 5G!
+---
 
-### 2. Instant Home Wi-Fi Party Server (Zero Internet Needed)
+## ⚙️ 3-Step Setup (Zero App Downloads)
+1. **Pick 1 Host Screen:** Open `https://tprzemek.github.io/thanksgiving-games/` on a phone, iPad, laptop, or TV everyone can see, and turn up the volume for the AI Voice Host & sound effects.
+2. **Set Your Players:** Remove any demo names by tapping `×`, type names directly, **or** let guests scan the QR code to auto-join.
+3. **Optional Live AI Boost (`⚙️` icon):** Everything works **100% free out of the box** with no API key. Tap `⚙️` in the top-right to optionally enable **Live Photorealistic AI Images (Pollinations.ai)** or connect a **Gemini / OpenAI API key**.
+
+---
+
+## 📱 How Guests Participate (Scanning the QR Barcode)
+1. On the Host screen, tap **📱 QR** in the top bar.
+2. Every guest opens their phone's normal **Camera app** (iPhone or Android) and points it at the square QR barcode on the Host screen.
+3. Tap the pop-up link banner (works over Wi-Fi **or** cellular 5G — no app install, no login, and no same-Wi-Fi requirement!).
+4. Enter your **Name**, pick **Kid / Teen / Adult**, choose an emoji avatar, and tap **Join Game Night!**
+5. **Keep your browser tab open:** Your phone automatically morphs into your live game controller (secret prompt box, giant red **BUZZ IN** button, **"🤖 THAT'S A BOT!"** slammer, Jury Vote buttons, or **PASS THE TURKEY** button!).
+
+> **No extra phones at the table?** Skip the QR code — every single game includes built-in Pass-the-Phone privacy screens and split-screen buzzers right on the Host device.
+
+---
+
+## 💻 Optional: Offline Home Wi-Fi Server
+If you want 100% offline play over local Wi-Fi with zero internet:
 ```bash
 node server.js
 ```
-Open the printed URL on the Host laptop/tablet, tap **📱 QR**, and every phone on the same Wi-Fi scans to join with instant local LAN sync.
-
-### 3. Single-Phone Pass-and-Play
-Open `index.html` directly on one phone or tablet — every game includes pass-the-phone privacy entry and split-screen multiplayer buzzers!
-
-## Optional AI Upgrades (Settings ⚙️)
-All 6 games work **100% out of the box with no API keys** (built-in instant AI engine, voice host, Web Audio sound FX, and procedural Canvas AI Artist). Open **⚙️ Settings** anytime to optionally enable:
-- **Live Photorealistic AI Images** (Pollinations.ai free instant generation)
-- **Google Gemini (`gemini-2.0-flash`)** or **OpenAI (`gpt-4o-mini`)** for custom LLM judging and bespoke bot answers.
+Open the printed URL on the Host laptop/tablet, tap **📱 QR**, and every phone on the same Wi-Fi scans to join locally.

@@ -18,6 +18,16 @@ const SoundFX = (() => {
     return ctx;
   }
 
+  // Unlock Web Audio automatically on first tap/keypress so iOS Safari & mobile Chrome always play timeout warnings!
+  if (typeof window !== 'undefined') {
+    const unlock = () => {
+      try { ensureCtx(); } catch (_) {}
+    };
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('touchstart', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
+  }
+
   function tone(freq, duration, type = 'sine', gainVal = 0.18, delay = 0) {
     const c = ensureCtx();
     if (!c) return;
@@ -67,8 +77,23 @@ const SoundFX = (() => {
     ding() { tone(784, 0.14, 'sine', 0.16); tone(1046.5, 0.28, 'sine', 0.18, 0.09); },
     wrong() { tone(240, 0.2, 'sawtooth', 0.12); tone(175, 0.32, 'sawtooth', 0.14, 0.14); },
     buzzer() {
-      tone(310, 0.12, 'square', 0.14);
-      tone(465, 0.22, 'sawtooth', 0.16, 0.06);
+      tone(330, 0.18, 'square', 0.24);
+      tone(220, 0.36, 'sawtooth', 0.26, 0.12);
+    },
+    warn30() {
+      tone(660, 0.14, 'triangle', 0.24, 0);
+      tone(880, 0.16, 'triangle', 0.26, 0.14);
+      tone(660, 0.2, 'triangle', 0.24, 0.30);
+    },
+    warn15() {
+      tone(920, 0.11, 'square', 0.20, 0);
+      tone(920, 0.11, 'square', 0.22, 0.15);
+      tone(1100, 0.18, 'square', 0.24, 0.30);
+    },
+    countdownBeep(secLeft) {
+      const pitch = 680 + Math.max(0, 10 - secLeft) * 55;
+      const dur = secLeft <= 3 ? 0.14 : 0.09;
+      tone(pitch, dur, secLeft <= 3 ? 'square' : 'triangle', secLeft <= 3 ? 0.24 : 0.20);
     },
     gavel() {
       tone(130, 0.11, 'triangle', 0.3);
@@ -78,7 +103,7 @@ const SoundFX = (() => {
     },
     tick(urgency = 0.2) {
       const pitch = 420 + urgency * 500;
-      tone(pitch, 0.055, 'triangle', 0.1 + urgency * 0.1);
+      tone(pitch, 0.065, 'triangle', 0.14 + urgency * 0.12);
     },
     boom() {
       noiseBurst(0.75, 0.45, 0, 380);

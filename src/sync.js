@@ -77,6 +77,7 @@ const RoomSync = (() => {
   let ws = null;
   let mqttReady = false;
   let brokerIdx = 0;
+  let consecutiveFails = 0;
   let pktCounter = 1;
   let pingTimer = null;
   let reconnectTimer = null;
@@ -197,19 +198,21 @@ const RoomSync = (() => {
     }
     ws = sock;
     let buf = new Uint8Array(0);
-    let openedOnce = false;
 
     const connectGuard = setTimeout(() => {
       if (!mqttReady && ws === sock) {
-        // Primary didn't CONNACK in 5s — try next broker!
-        brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+        consecutiveFails++;
+        // Only rotate broker if primary fails 4+ times in a row (prevents 1 phone splitting onto a different broker!)
+        if (consecutiveFails >= 4) {
+          brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+          consecutiveFails = 0;
+        }
         try { sock.close(); } catch (_) {}
       }
-    }, 5500);
+    }, 6000);
 
     sock.onopen = () => {
       if (ws !== sock) return;
-      openedOnce = true;
       try {
         sock.send(mqttConnectPkt(clientId + '_' + Math.random().toString(36).slice(2, 6)));
       } catch (_) {}
@@ -239,6 +242,7 @@ const RoomSync = (() => {
 
         if (type === 2) { // CONNACK
           clearTimeout(connectGuard);
+          consecutiveFails = 0;
           mqttReady = true;
           notifyStatus();
           try {
@@ -259,7 +263,6 @@ const RoomSync = (() => {
           if (!payloadStr) continue;
           try {
             const parsed = JSON.parse(payloadStr);
-            // Ignore our own echoed packets on non-retained/retained topics (seenIds handles it too)
             emit(parsed);
           } catch (_) {}
         }
@@ -272,8 +275,7 @@ const RoomSync = (() => {
       ws = null;
       mqttReady = false;
       notifyStatus();
-      if (!openedOnce) brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
-      if (shouldRun) scheduleReconnect();
+      if (shouldRun) scheduleReconnect(1200);
     };
 
     sock.onerror = () => {};
@@ -289,7 +291,7 @@ const RoomSync = (() => {
     }, delayMs);
   }
 
-  // Re-subscribe (or reconnect) to immediately pull all retained state, results & AI images!
+  // Re-subscribe (or reconnect) to immediately pull all retained state, submissions, drafts, results & AI images!
   async function pollNow() {
     if (mode !== 'cloud' || !roomCode) return;
     if (ws && ws.readyState === 1 && mqttReady) {
@@ -312,6 +314,7 @@ const RoomSync = (() => {
     roomCode = (code || genCode(4)).toUpperCase();
     shouldRun = true;
     brokerIdx = 0;
+    consecutiveFails = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -367,6 +370,17 @@ const RoomSync = (() => {
     if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true };
     if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true };
     if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true };
+    // Retain every participant's prompt submission & draft on their own topic so Host NEVER misses anyone!
+    if (msg.type === 'ACTION' && msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.roundId) {
+      const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
+      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
+      return { subTopic: `sub/${rid}/${pid}`, retain: true };
+    }
+    if (msg.type === 'ACTION' && msg.action === 'CLONE_DRAFT' && msg.playerId && msg.roundId) {
+      const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
+      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
+      return { subTopic: `draft/${rid}/${pid}`, retain: true };
+    }
     return { subTopic: 'events', retain: false };
   }
 

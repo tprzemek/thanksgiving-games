@@ -1102,6 +1102,16 @@ const SoundFX = (() => {
     return ctx;
   }
 
+  // Unlock Web Audio automatically on first tap/keypress so iOS Safari & mobile Chrome always play timeout warnings!
+  if (typeof window !== 'undefined') {
+    const unlock = () => {
+      try { ensureCtx(); } catch (_) {}
+    };
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('touchstart', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
+  }
+
   function tone(freq, duration, type = 'sine', gainVal = 0.18, delay = 0) {
     const c = ensureCtx();
     if (!c) return;
@@ -1151,8 +1161,23 @@ const SoundFX = (() => {
     ding() { tone(784, 0.14, 'sine', 0.16); tone(1046.5, 0.28, 'sine', 0.18, 0.09); },
     wrong() { tone(240, 0.2, 'sawtooth', 0.12); tone(175, 0.32, 'sawtooth', 0.14, 0.14); },
     buzzer() {
-      tone(310, 0.12, 'square', 0.14);
-      tone(465, 0.22, 'sawtooth', 0.16, 0.06);
+      tone(330, 0.18, 'square', 0.24);
+      tone(220, 0.36, 'sawtooth', 0.26, 0.12);
+    },
+    warn30() {
+      tone(660, 0.14, 'triangle', 0.24, 0);
+      tone(880, 0.16, 'triangle', 0.26, 0.14);
+      tone(660, 0.2, 'triangle', 0.24, 0.30);
+    },
+    warn15() {
+      tone(920, 0.11, 'square', 0.20, 0);
+      tone(920, 0.11, 'square', 0.22, 0.15);
+      tone(1100, 0.18, 'square', 0.24, 0.30);
+    },
+    countdownBeep(secLeft) {
+      const pitch = 680 + Math.max(0, 10 - secLeft) * 55;
+      const dur = secLeft <= 3 ? 0.14 : 0.09;
+      tone(pitch, dur, secLeft <= 3 ? 'square' : 'triangle', secLeft <= 3 ? 0.24 : 0.20);
     },
     gavel() {
       tone(130, 0.11, 'triangle', 0.3);
@@ -1162,7 +1187,7 @@ const SoundFX = (() => {
     },
     tick(urgency = 0.2) {
       const pitch = 420 + urgency * 500;
-      tone(pitch, 0.055, 'triangle', 0.1 + urgency * 0.1);
+      tone(pitch, 0.065, 'triangle', 0.14 + urgency * 0.12);
     },
     boom() {
       noiseBurst(0.75, 0.45, 0, 380);
@@ -2865,6 +2890,7 @@ const RoomSync = (() => {
   let ws = null;
   let mqttReady = false;
   let brokerIdx = 0;
+  let consecutiveFails = 0;
   let pktCounter = 1;
   let pingTimer = null;
   let reconnectTimer = null;
@@ -2985,19 +3011,21 @@ const RoomSync = (() => {
     }
     ws = sock;
     let buf = new Uint8Array(0);
-    let openedOnce = false;
 
     const connectGuard = setTimeout(() => {
       if (!mqttReady && ws === sock) {
-        // Primary didn't CONNACK in 5s — try next broker!
-        brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+        consecutiveFails++;
+        // Only rotate broker if primary fails 4+ times in a row (prevents 1 phone splitting onto a different broker!)
+        if (consecutiveFails >= 4) {
+          brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+          consecutiveFails = 0;
+        }
         try { sock.close(); } catch (_) {}
       }
-    }, 5500);
+    }, 6000);
 
     sock.onopen = () => {
       if (ws !== sock) return;
-      openedOnce = true;
       try {
         sock.send(mqttConnectPkt(clientId + '_' + Math.random().toString(36).slice(2, 6)));
       } catch (_) {}
@@ -3027,6 +3055,7 @@ const RoomSync = (() => {
 
         if (type === 2) { // CONNACK
           clearTimeout(connectGuard);
+          consecutiveFails = 0;
           mqttReady = true;
           notifyStatus();
           try {
@@ -3047,7 +3076,6 @@ const RoomSync = (() => {
           if (!payloadStr) continue;
           try {
             const parsed = JSON.parse(payloadStr);
-            // Ignore our own echoed packets on non-retained/retained topics (seenIds handles it too)
             emit(parsed);
           } catch (_) {}
         }
@@ -3060,8 +3088,7 @@ const RoomSync = (() => {
       ws = null;
       mqttReady = false;
       notifyStatus();
-      if (!openedOnce) brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
-      if (shouldRun) scheduleReconnect();
+      if (shouldRun) scheduleReconnect(1200);
     };
 
     sock.onerror = () => {};
@@ -3077,7 +3104,7 @@ const RoomSync = (() => {
     }, delayMs);
   }
 
-  // Re-subscribe (or reconnect) to immediately pull all retained state, results & AI images!
+  // Re-subscribe (or reconnect) to immediately pull all retained state, submissions, drafts, results & AI images!
   async function pollNow() {
     if (mode !== 'cloud' || !roomCode) return;
     if (ws && ws.readyState === 1 && mqttReady) {
@@ -3100,6 +3127,7 @@ const RoomSync = (() => {
     roomCode = (code || genCode(4)).toUpperCase();
     shouldRun = true;
     brokerIdx = 0;
+    consecutiveFails = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -3155,6 +3183,17 @@ const RoomSync = (() => {
     if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true };
     if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true };
     if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true };
+    // Retain every participant's prompt submission & draft on their own topic so Host NEVER misses anyone!
+    if (msg.type === 'ACTION' && msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.roundId) {
+      const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
+      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
+      return { subTopic: `sub/${rid}/${pid}`, retain: true };
+    }
+    if (msg.type === 'ACTION' && msg.action === 'CLONE_DRAFT' && msg.playerId && msg.roundId) {
+      const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
+      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
+      return { subTopic: `draft/${rid}/${pid}`, retain: true };
+    }
     return { subTopic: 'events', retain: false };
   }
 
@@ -3907,6 +3946,7 @@ const Games = (() => {
 
     function onPhoneAction(msg) {
       if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading') return;
+      if (msg.roundId && String(msg.roundId) !== String(roundId)) return;
       if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
         if (phase === 'grading') return;
         const clean = msg.value.trim();
@@ -3964,7 +4004,7 @@ const Games = (() => {
         customTargetUrl = await RoomSync.uploadImage(customTargetThumb);
       }
       SoundFX.ding();
-      SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to write an AI prompt that recreates it as closely as possible!`);
+      SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to describe it in your own words!`);
       broadcastPhoneState();
       if (customTargetImg && customTargetThumb && !customTargetUrl) {
         RoomSync.sendImage(`target_${roundId}`, customTargetThumb);
@@ -3973,15 +4013,16 @@ const Games = (() => {
       timer = setInterval(() => {
         timeLeft--;
         if (timeLeft === 30) {
-          SoundFX.ding();
+          SoundFX.warn30();
           SoundFX.speak('30 seconds left! Wrap up your prompt!');
         } else if (timeLeft === 15) {
-          SoundFX.tick(1.0);
+          SoundFX.warn15();
+          SoundFX.speak('15 seconds left!');
         } else if (timeLeft === 10) {
-          SoundFX.tick(1.2);
+          SoundFX.countdownBeep(10);
           SoundFX.speak('10 seconds left!');
         } else if (timeLeft < 10 && timeLeft > 0) {
-          SoundFX.tick(0.85 + (10 - timeLeft) * 0.05);
+          SoundFX.countdownBeep(timeLeft);
         }
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
@@ -4011,11 +4052,16 @@ const Games = (() => {
       phase = 'collecting';
       gradingStatus = '⏱️ Time\'s up! Auto-collecting everyone\'s typed prompts (even if they didn\'t tap Lock In)...';
       SoundFX.buzzer();
+      SoundFX.speak('Time is up! Collecting all prompts now.');
       broadcastPhoneState();
       render();
 
       const isCloud = RoomSync.getMode() === 'cloud';
-      const sweepMs = isCloud ? 2600 : 1500;
+      const sweepMs = isCloud ? 3500 : 1500;
+      if (isCloud) {
+        // Re-pull all retained per-player sub/<roundId>/* & draft/<roundId>/* from MQTT broker so ZERO players are missed!
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(), 2100));
+      }
 
       collectTimer = setTimeout(() => {
         clearCollectTimers();
@@ -4309,7 +4355,7 @@ const Games = (() => {
             ${renderHostCountdownBanner()}
             <div>
               <h2 style="margin-bottom:2px;">🔍 Recreate This Image!</h2>
-              <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)}</p>
+              <p class="muted small" style="margin:0;">Describe everything you see in your own words — no hints!</p>
             </div>
 
             <div class="art-frame" style="max-width:560px;">${targetImgHtml}</div>
@@ -4383,13 +4429,8 @@ const Games = (() => {
             <h2 style="margin:0;">${p.avatar} ${esc(p.name)}'s Secret Prompt</h2>
             <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             <div class="card stack">
-              <label class="small"><strong>Describe everything you see</strong> (subjects, setting, props, colors, weather, art style!):</label>
-              <textarea class="textarea" id="clone-prompt-box" placeholder="Example: A turkey wearing sunglasses riding a skateboard at sunset with falling leaves...">${esc(existing)}</textarea>
-              <div class="chip-wrap">
-                ${['pixel art', 'neon', 'vintage', 'watercolor', 'ink sketch', 'sunset', 'outer space', 'snowy mountains', 'sunglasses', 'crown', 'rainbow', 'fireworks'].map(c =>
-                  `<button type="button" class="chip" data-chip="${c}">+ ${c}</button>`
-                ).join('')}
-              </div>
+              <label class="small"><strong>Describe the image in your own words:</strong></label>
+              <textarea class="textarea" id="clone-prompt-box" placeholder="Type your own description of what you see...">${esc(existing)}</textarea>
               <div class="row-between">
                 <button class="btn" id="clone-back-writing">Cancel</button>
                 <button class="btn btn-primary btn-lg" id="clone-lock-in">🔒 Lock In Prompt</button>
@@ -4404,13 +4445,6 @@ const Games = (() => {
           else delete drafts[p.id];
         };
         box.oninput = saveLocalDraft;
-        root.querySelectorAll('[data-chip]').forEach(ch => {
-          ch.onclick = () => {
-            box.value = (box.value.trim() ? box.value.trim() + ' ' : '') + ch.dataset.chip;
-            saveLocalDraft();
-            box.focus();
-          };
-        });
         document.getElementById('clone-back-writing').onclick = () => { phase = 'writing'; render(); };
         document.getElementById('clone-lock-in').onclick = () => {
           const val = box.value.trim();
@@ -6951,9 +6985,12 @@ const App = (() => {
     let submitRetryTimer = null;
     let deadlineTimer = null;
     let deadlineRoundKey = '';
+    let localDeadlineTs = 0;
     let phoneCountdownTimer = null;
     let phoneWarned30 = false;
     let phoneWarned15 = false;
+    let phoneLastBeepSec = 11;
+    let phoneBuzzedZero = false;
     let activeBotRound = '';
     let botDraft = '';
     let cachedTargetKey = '';
@@ -6983,8 +7020,9 @@ const App = (() => {
 
     function renderPhoneCountdownBanner(payload) {
       const total = Number(payload.durationSec) || 180;
-      const secLeft = payload.deadlineTs
-        ? Math.max(0, (Number(payload.deadlineTs) - Date.now()) / 1000)
+      const dl = localDeadlineTs || Number(payload.deadlineTs) || 0;
+      const secLeft = dl
+        ? Math.max(0, (dl - Date.now()) / 1000)
         : (Number(payload.timeLeft) || total);
       const m = phoneCountdownMeta(secLeft, total);
       return `
@@ -7003,19 +7041,27 @@ const App = (() => {
 
     function syncPhoneCountdown(payload) {
       stopPhoneCountdown();
-      if (!payload || !payload.deadlineTs) return;
-      const total = Number(payload.durationSec) || 180;
-      const deadline = Number(payload.deadlineTs);
+      const deadline = localDeadlineTs || Number(payload?.deadlineTs) || 0;
+      if (!deadline) return;
+      const total = Number(payload?.durationSec) || 180;
       const tick = () => {
         const sec = Math.max(0, (deadline - Date.now()) / 1000);
         const sCeil = Math.ceil(sec);
         if (sCeil <= 30 && sCeil > 15 && !phoneWarned30) {
           phoneWarned30 = true;
-          SoundFX.ding();
+          SoundFX.warn30();
         }
-        if (sCeil <= 15 && sCeil > 0 && !phoneWarned15) {
+        if (sCeil <= 15 && sCeil > 10 && !phoneWarned15) {
           phoneWarned15 = true;
-          SoundFX.tick(1.1);
+          SoundFX.warn15();
+        }
+        if (sCeil <= 10 && sCeil >= 1 && sCeil < phoneLastBeepSec) {
+          phoneLastBeepSec = sCeil;
+          SoundFX.countdownBeep(sCeil);
+        }
+        if (sec <= 0 && !phoneBuzzedZero) {
+          phoneBuzzedZero = true;
+          SoundFX.buzzer();
         }
         const m = phoneCountdownMeta(sec, total);
         const banner = document.getElementById('p-cd-banner');
@@ -7032,7 +7078,7 @@ const App = (() => {
         if (sec <= 0) stopPhoneCountdown();
       };
       tick();
-      phoneCountdownTimer = setInterval(tick, 300);
+      phoneCountdownTimer = setInterval(tick, 250);
     }
 
     function clearDraftSync() {
@@ -7054,8 +7100,8 @@ const App = (() => {
       if (!me) return;
       const clean = String(val || '').trim();
       if (!clean || clean === lastSyncedDraft) return;
-      // Jittered 7–9.5s debounce keeps ntfy.sh POST traffic low when 10+ phones type simultaneously!
-      const waitMs = 7000 + Math.floor(Math.random() * 2500);
+      // Save draft to retained per-player topic every ~4s so even a dead battery/dropped phone is never lost!
+      const waitMs = 3500 + Math.floor(Math.random() * 1500);
       draftSyncTimer = setTimeout(() => {
         draftSyncTimer = null;
         if (hostState.game === 'promptClone' && hostState.phase === 'writing' && !pendingCloneSub) {
@@ -7064,6 +7110,7 @@ const App = (() => {
             lastSyncedDraft = cur;
             RoomSync.send({
               type: 'ACTION',
+              roundId: hostState.payload?.roundId || null,
               playerId: me.id,
               playerName: me.name,
               avatar: me.avatar,
@@ -7080,6 +7127,7 @@ const App = (() => {
       if (!me || !text) return;
       RoomSync.send({
         type: 'ACTION',
+        roundId: hostState.payload?.roundId || null,
         playerId: me.id,
         playerName: me.name,
         avatar: me.avatar,
@@ -7397,10 +7445,15 @@ const App = (() => {
         stopPhoneCountdown();
         phoneWarned30 = false;
         phoneWarned15 = false;
+        phoneLastBeepSec = 11;
+        phoneBuzzedZero = false;
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
         lastSyncedDraft = '';
         mySubmittedClonePrompt = '';
+        // Compute clock-skew-free local deadline from relative timeLeft so every phone counts down identically!
+        const secRem = typeof payload.timeLeft === 'number' ? payload.timeLeft : (Number(payload.durationSec) || 180);
+        localDeadlineTs = Date.now() + Math.max(0, secRem) * 1000;
       }
       if (game === 'spotTheBot' && phase === 'submit' && activeBotRound !== botRoundKey) {
         activeBotRound = botRoundKey;
@@ -7415,10 +7468,10 @@ const App = (() => {
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
       const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
-      // Local deadline watchdog: even if mobile Safari/Chrome dropped SSE while typing, auto-submit at deadline!
-      if (game === 'promptClone' && phase === 'writing' && !cloneAlready && payload.deadlineTs && deadlineRoundKey !== cloneRoundKey) {
+      // Local deadline watchdog: even if mobile Safari/Chrome dropped WebSocket while typing, auto-submit at deadline!
+      if (game === 'promptClone' && phase === 'writing' && !cloneAlready && localDeadlineTs && deadlineRoundKey !== cloneRoundKey) {
         clearDeadlineWatchdog();
-        const msLeft = Math.max(0, Number(payload.deadlineTs) - Date.now());
+        const msLeft = Math.max(0, localDeadlineTs - Date.now());
         if (msLeft > 0 && msLeft < 600000) {
           deadlineRoundKey = cloneRoundKey;
           deadlineTimer = setTimeout(() => {
@@ -7426,12 +7479,12 @@ const App = (() => {
             if (hostState.game === 'promptClone' && hostState.phase === 'writing' && submittedKey !== cloneRoundKey) {
               const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
               if (liveVal) {
-                SoundFX.ding();
+                SoundFX.buzzer();
                 lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
                 renderPhone();
               }
             }
-          }, msLeft + 200);
+          }, msLeft + 150);
         }
       }
 
@@ -7439,7 +7492,7 @@ const App = (() => {
       if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading') && !cloneAlready) {
         const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
         if (liveVal) {
-          SoundFX.ding();
+          SoundFX.buzzer();
           lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
         }
       }
@@ -7494,12 +7547,8 @@ const App = (() => {
             </div>
             <h2 style="margin:0;">🔍 Recreate This Image!</h2>
             <div id="phone-target-slot">${imgHtml}</div>
-            <p class="xs muted" style="margin:0;">💡 Hint: ${esc(payload.tips || 'Describe subjects, setting, props, colors, and art style!')}</p>
-            <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style...">${esc(cloneDraft)}</textarea>
-            <div class="chip-wrap">
-              ${['origami', 'claymation', 'stained glass', 'steampunk', 'pop-art comic', 'miniature 3D', 'watercolor', 'pixel art', 'neon', 'vintage photo'].map(c =>
-                `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
-            </div>
+            <p class="xs muted" style="margin:0;">Describe everything you see in your own words — no hints!</p>
+            <textarea class="textarea" id="p-clone-in" placeholder="Describe what you see in your own words...">${esc(cloneDraft)}</textarea>
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
             <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits at 0:00!</p>
           </div>`;

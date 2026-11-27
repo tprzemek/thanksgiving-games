@@ -232,6 +232,7 @@ const Games = (() => {
 
     function onPhoneAction(msg) {
       if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading') return;
+      if (msg.roundId && String(msg.roundId) !== String(roundId)) return;
       if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
         if (phase === 'grading') return;
         const clean = msg.value.trim();
@@ -289,7 +290,7 @@ const Games = (() => {
         customTargetUrl = await RoomSync.uploadImage(customTargetThumb);
       }
       SoundFX.ding();
-      SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to write an AI prompt that recreates it as closely as possible!`);
+      SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to describe it in your own words!`);
       broadcastPhoneState();
       if (customTargetImg && customTargetThumb && !customTargetUrl) {
         RoomSync.sendImage(`target_${roundId}`, customTargetThumb);
@@ -298,15 +299,16 @@ const Games = (() => {
       timer = setInterval(() => {
         timeLeft--;
         if (timeLeft === 30) {
-          SoundFX.ding();
+          SoundFX.warn30();
           SoundFX.speak('30 seconds left! Wrap up your prompt!');
         } else if (timeLeft === 15) {
-          SoundFX.tick(1.0);
+          SoundFX.warn15();
+          SoundFX.speak('15 seconds left!');
         } else if (timeLeft === 10) {
-          SoundFX.tick(1.2);
+          SoundFX.countdownBeep(10);
           SoundFX.speak('10 seconds left!');
         } else if (timeLeft < 10 && timeLeft > 0) {
-          SoundFX.tick(0.85 + (10 - timeLeft) * 0.05);
+          SoundFX.countdownBeep(timeLeft);
         }
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
@@ -336,11 +338,16 @@ const Games = (() => {
       phase = 'collecting';
       gradingStatus = '⏱️ Time\'s up! Auto-collecting everyone\'s typed prompts (even if they didn\'t tap Lock In)...';
       SoundFX.buzzer();
+      SoundFX.speak('Time is up! Collecting all prompts now.');
       broadcastPhoneState();
       render();
 
       const isCloud = RoomSync.getMode() === 'cloud';
-      const sweepMs = isCloud ? 2600 : 1500;
+      const sweepMs = isCloud ? 3500 : 1500;
+      if (isCloud) {
+        // Re-pull all retained per-player sub/<roundId>/* & draft/<roundId>/* from MQTT broker so ZERO players are missed!
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(), 2100));
+      }
 
       collectTimer = setTimeout(() => {
         clearCollectTimers();
@@ -634,7 +641,7 @@ const Games = (() => {
             ${renderHostCountdownBanner()}
             <div>
               <h2 style="margin-bottom:2px;">🔍 Recreate This Image!</h2>
-              <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)}</p>
+              <p class="muted small" style="margin:0;">Describe everything you see in your own words — no hints!</p>
             </div>
 
             <div class="art-frame" style="max-width:560px;">${targetImgHtml}</div>
@@ -708,13 +715,8 @@ const Games = (() => {
             <h2 style="margin:0;">${p.avatar} ${esc(p.name)}'s Secret Prompt</h2>
             <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             <div class="card stack">
-              <label class="small"><strong>Describe everything you see</strong> (subjects, setting, props, colors, weather, art style!):</label>
-              <textarea class="textarea" id="clone-prompt-box" placeholder="Example: A turkey wearing sunglasses riding a skateboard at sunset with falling leaves...">${esc(existing)}</textarea>
-              <div class="chip-wrap">
-                ${['pixel art', 'neon', 'vintage', 'watercolor', 'ink sketch', 'sunset', 'outer space', 'snowy mountains', 'sunglasses', 'crown', 'rainbow', 'fireworks'].map(c =>
-                  `<button type="button" class="chip" data-chip="${c}">+ ${c}</button>`
-                ).join('')}
-              </div>
+              <label class="small"><strong>Describe the image in your own words:</strong></label>
+              <textarea class="textarea" id="clone-prompt-box" placeholder="Type your own description of what you see...">${esc(existing)}</textarea>
               <div class="row-between">
                 <button class="btn" id="clone-back-writing">Cancel</button>
                 <button class="btn btn-primary btn-lg" id="clone-lock-in">🔒 Lock In Prompt</button>
@@ -729,13 +731,6 @@ const Games = (() => {
           else delete drafts[p.id];
         };
         box.oninput = saveLocalDraft;
-        root.querySelectorAll('[data-chip]').forEach(ch => {
-          ch.onclick = () => {
-            box.value = (box.value.trim() ? box.value.trim() + ' ' : '') + ch.dataset.chip;
-            saveLocalDraft();
-            box.focus();
-          };
-        });
         document.getElementById('clone-back-writing').onclick = () => { phase = 'writing'; render(); };
         document.getElementById('clone-lock-in').onclick = () => {
           const val = box.value.trim();

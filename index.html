@@ -2458,43 +2458,49 @@ const GAME_DATA = {
         id: 'clone-7',
         title: 'Retro Arcade Pilgrim',
         difficulty: 'Tricky',
-        secretPrompt: 'Pixel art pilgrim riding a rocket at starry night with rainbow',
-        tips: 'Notice the ART STYLE first! Then catch every object and sky detail.',
+        asset: 'assets/clone-7.jpg',
+        secretPrompt: 'Pixel art pilgrim wearing a buckle hat riding a red and white rocket at starry night with a bright rainbow',
+        tips: 'Notice the 8-bit pixel art style first! Then catch every object and sky detail.',
       },
       {
         id: 'clone-8',
         title: 'Vintage Dragon Chef',
         difficulty: 'Tricky',
-        secretPrompt: 'Vintage sepia dragon wearing a chef hat juggling cranberries near a volcano',
-        tips: 'Notice the old-timey photo filter, the hat, the floating red berries, and the fiery background!',
+        asset: 'assets/clone-8.jpg',
+        secretPrompt: 'Vintage sepia photograph of a dragon wearing a chef hat juggling glowing cranberries near an erupting volcano',
+        tips: 'Notice the old-timey sepia photo style, the hat, the floating berries, and the fiery background!',
       },
       {
         id: 'clone-9',
         title: 'Super Fox Victory',
         difficulty: 'Medium',
-        secretPrompt: 'A superhero fox wearing a cape holding a trophy in autumn forest with falling leaves',
-        tips: 'Check the woodland animal, costume piece, prize, and autumn scenery!',
+        asset: 'assets/clone-9.jpg',
+        secretPrompt: 'A cartoon orange fox wearing a red superhero cape holding a gold trophy cup in an autumn forest with falling leaves',
+        tips: 'Check the woodland animal, costume piece, golden prize, and autumn scenery!',
       },
       {
         id: 'clone-10',
         title: 'Triple Pumpkin Sketch',
         difficulty: 'Expert',
-        secretPrompt: 'Ink sketch of three pumpkins at starry night with glowing candles',
-        tips: 'Count carefully, spot the exact black-and-white drawing style, and notice the light source!',
+        asset: 'assets/clone-10.jpg',
+        secretPrompt: 'Black and white ink sketch drawing of three smiling carved pumpkins under a starry crescent moon night sky with glowing candles',
+        tips: 'Count carefully, spot the exact black-and-white ink sketch style, and notice the moon & candles!',
       },
       {
         id: 'clone-11',
         title: 'Underwater Pizza Party',
         difficulty: 'Medium',
-        secretPrompt: 'A turkey and pizza wearing a royal crown underwater with balloons',
-        tips: 'Check the submerged ocean world, main duo, hat, and floating party props!',
+        asset: 'assets/clone-11.jpg',
+        secretPrompt: 'Colorful underwater ocean cartoon of a turkey wearing a golden royal crown swimming beside a pepperoni pizza slice and three floating balloons',
+        tips: 'Check the submerged coral reef world, main duo, royal headgear, and floating party props!',
       },
       {
         id: 'clone-12',
         title: 'Grandma\'s Rainy Bakery',
         difficulty: 'Tricky',
-        secretPrompt: 'Watercolor painting of grandma chef with pumpkin pie and gravy boat in the rain',
-        tips: 'Look for the soft painted style, the trio of cozy elements, and the weather!',
+        asset: 'assets/clone-12.jpg',
+        secretPrompt: 'Soft watercolor painting of a silver-haired grandma chef wearing an apron and chef hat holding a pumpkin pie beside a steaming gravy boat in the rain',
+        tips: 'Look for the soft watercolor style, the cozy bakery, food details, and rainy puddles!',
       },
     ],
   },
@@ -2942,7 +2948,7 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let idx = Math.floor(Math.random() * 6); // Start on one of the 6 real studio AI target artworks!
+    let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length); // All 12 rounds have real studio AI target artworks!
     let phase = 'lobby'; // lobby | writing | pass_cover | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;

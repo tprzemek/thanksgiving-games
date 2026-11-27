@@ -26,7 +26,7 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let idx = Math.floor(Math.random() * 6); // Start on one of the 6 real studio AI target artworks!
+    let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length); // All 12 rounds have real studio AI target artworks!
     let phase = 'lobby'; // lobby | writing | pass_cover | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;

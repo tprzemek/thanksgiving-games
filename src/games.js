@@ -26,7 +26,9 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length); // All 12 rounds have real studio AI target artworks!
+    let deck = shuffle(GAME_DATA.promptClone.challenges.map((_, i) => i));
+    let deckPos = 0;
+    let idx = deck[deckPos];
     let phase = 'lobby'; // lobby | writing | collecting | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;
@@ -49,6 +51,40 @@ const Games = (() => {
     let gradingStatus = '';
     let gradingQueue = null;
     let gradingSeen = null;
+
+    function nextChallenge() {
+      deckPos++;
+      if (deckPos >= deck.length) {
+        deck = shuffle(GAME_DATA.promptClone.challenges.map((_, i) => i));
+        deckPos = 0;
+      }
+      idx = deck[deckPos];
+      target = GAME_DATA.promptClone.challenges[idx];
+    }
+
+    function countdownMeta(sec, total) {
+      const s = Math.max(0, Math.ceil(sec));
+      const pct = Math.max(0, Math.min(100, Math.round((s / Math.max(1, total)) * 100)));
+      if (s <= 15) {
+        return { cls: 'urgent', pct, msg: s <= 5 ? '🚨 TIME ALMOST UP! Auto-submitting now!' : '🚨 HURRY! Less than 15s — auto-submits at 0:00!' };
+      }
+      if (s <= 30) {
+        return { cls: 'warn', pct, msg: '⚠️ 30 SECONDS LEFT! Wrap up your prompt!' };
+      }
+      return { cls: '', pct, msg: '⏱️ Time Remaining (auto-submits at 0:00)' };
+    }
+
+    function renderHostCountdownBanner() {
+      const m = countdownMeta(timeLeft, durationSec);
+      return `
+        <div class="countdown-banner ${m.cls}" id="clone-cd-banner">
+          <div class="cd-top">
+            <span class="cd-msg" id="clone-cd-msg">${m.msg}</span>
+            <span class="cd-time" id="clone-timer">${fmtTime(timeLeft)}</span>
+          </div>
+          <div class="cd-track"><div class="cd-fill" id="clone-cd-fill" style="width:${m.pct}%;"></div></div>
+        </div>`;
+    }
 
     function clearCollectTimers() {
       if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
@@ -120,7 +156,6 @@ const Games = (() => {
 
     function broadcastPhoneState() {
       if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
-      // Embed results directly in HOST_STATE only if <= 3 players (keeps packet safely < 1.6KB for ntfy.sh!)
       const inlineResults = (phase === 'results' && gradedResults.length <= 3)
         ? gradedResults.map((r, i) => toCompactResult(r, i))
         : null;
@@ -134,6 +169,7 @@ const Games = (() => {
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
         difficulty: customTargetImg ? 'Custom' : target.difficulty,
         timeLeft,
+        durationSec,
         deadlineTs: phase === 'writing' ? deadlineTs : 0,
         submittedIds: Object.keys(submissions),
         gradingStatus,
@@ -260,16 +296,33 @@ const Games = (() => {
       if (timer) clearInterval(timer);
       timer = setInterval(() => {
         timeLeft--;
-        if (timeLeft <= 10 && timeLeft > 0) SoundFX.tick(0.7);
+        if (timeLeft === 30) {
+          SoundFX.ding();
+          SoundFX.speak('30 seconds left! Wrap up your prompt!');
+        } else if (timeLeft === 15) {
+          SoundFX.tick(1.0);
+        } else if (timeLeft === 10) {
+          SoundFX.tick(1.2);
+          SoundFX.speak('10 seconds left!');
+        } else if (timeLeft < 10 && timeLeft > 0) {
+          SoundFX.tick(0.85 + (10 - timeLeft) * 0.05);
+        }
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
           beginCollectAndGrade();
           return;
         }
+        const m = countdownMeta(timeLeft, durationSec);
+        const banner = document.getElementById('clone-cd-banner');
         const el = document.getElementById('clone-timer');
-        if (el) {
-          el.textContent = fmtTime(timeLeft);
-          if (timeLeft <= 15) el.classList.add('urgent');
+        const msgEl = document.getElementById('clone-cd-msg');
+        const fillEl = document.getElementById('clone-cd-fill');
+        if (el) el.textContent = fmtTime(timeLeft);
+        if (msgEl) msgEl.textContent = m.msg;
+        if (fillEl) fillEl.style.width = `${m.pct}%`;
+        if (banner) {
+          banner.classList.toggle('warn', m.cls === 'warn');
+          banner.classList.toggle('urgent', m.cls === 'urgent');
         }
       }, 1000);
       render();
@@ -382,21 +435,27 @@ const Games = (() => {
             }
           }
 
-          // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+          // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
+          const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
           if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
             const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
             const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
             if (vis && typeof vis.score === 'number') {
-              grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
+              // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
+              grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
+              if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
               if (vis.comment) grade.comment = vis.comment;
             }
           } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
             const llm = await LiveAI.askJSON(
-              'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
-              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
+              'You are a strict, fair visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
+              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "comment": "1 sharp sentence explaining what matched and what missed"}`
             );
-            if (llm && typeof llm.score === 'number') {
-              grade.score = Math.max(5, Math.min(100, Math.round(llm.score)));
+            if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
+              const rawScore = typeof llm.subject === 'number'
+                ? Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))
+                : llm.score;
+              grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
               if (llm.comment) grade.comment = llm.comment;
             }
           }
@@ -446,7 +505,7 @@ const Games = (() => {
       gradingQueue = null;
       gradingSeen = null;
 
-      finalResults.sort((a, b) => b.score - a.score);
+      finalResults.sort((a, b) => (b.score - a.score) || ((b.lexicalPct || 0) - (a.lexicalPct || 0)) || (b.prompt.length - a.prompt.length));
       gradedResults = finalResults;
       gradedResults._warning = aiWarning;
 
@@ -538,8 +597,7 @@ const Games = (() => {
           customTargetImg = null;
           customTargetThumb = null;
           customTargetUrl = null;
-          idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
-          target = GAME_DATA.promptClone.challenges[idx];
+          nextChallenge();
           buildTarget();
           SoundFX.pop();
           render();
@@ -572,12 +630,10 @@ const Games = (() => {
         const missing = players.filter(p => !submissions[p.id]);
         root.innerHTML = `
           <div class="stack fade-in">
-            <div class="row-between">
-              <div>
-                <h2>🔍 Recreate This Image!</h2>
-                <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)} · <em>Typed drafts auto-submit when time runs out!</em></p>
-              </div>
-              <div class="timer-box ${timeLeft <= 15 ? 'urgent' : ''}" id="clone-timer">${fmtTime(timeLeft)}</div>
+            ${renderHostCountdownBanner()}
+            <div>
+              <h2 style="margin-bottom:2px;">🔍 Recreate This Image!</h2>
+              <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)}</p>
             </div>
 
             <div class="art-frame" style="max-width:560px;">${targetImgHtml}</div>
@@ -647,10 +703,8 @@ const Games = (() => {
         const existing = submissions[p.id]?.text || drafts[p.id]?.text || '';
         root.innerHTML = `
           <div class="stack fade-in">
-            <div class="row-between">
-              <h2>${p.avatar} ${esc(p.name)}'s Secret Prompt</h2>
-              <div class="timer-box ${timeLeft <= 15 ? 'urgent' : ''}" id="clone-timer">${fmtTime(timeLeft)}</div>
-            </div>
+            ${renderHostCountdownBanner()}
+            <h2 style="margin:0;">${p.avatar} ${esc(p.name)}'s Secret Prompt</h2>
             <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             <div class="card stack">
               <label class="small"><strong>Describe everything you see</strong> (subjects, setting, props, colors, weather, art style!):</label>
@@ -783,8 +837,7 @@ const Games = (() => {
           customTargetUrl = null;
           drafts = {};
           gradingStatus = '';
-          idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
-          target = GAME_DATA.promptClone.challenges[idx];
+          nextChallenge();
           buildTarget();
           phase = 'lobby';
           broadcastPhoneState();

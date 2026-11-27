@@ -395,6 +395,69 @@ h3 {
   animation: pulseFast 0.6s infinite alternate;
 }
 
+.countdown-banner {
+  position: sticky;
+  top: 6px;
+  z-index: 30;
+  background: var(--surface);
+  border: 2px solid var(--pumpkin);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  box-shadow: 0 6px 20px rgba(43, 30, 22, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background 0.25s, border-color 0.25s, color 0.25s;
+}
+.countdown-banner .cd-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.countdown-banner .cd-time {
+  font-family: var(--font-mono);
+  font-size: clamp(1.6rem, 4.8vw, 2.2rem);
+  font-weight: 900;
+  line-height: 1;
+  color: var(--pumpkin-dark);
+}
+.countdown-banner .cd-msg {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+.countdown-banner .cd-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(43, 30, 22, 0.12);
+  overflow: hidden;
+}
+.countdown-banner .cd-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--pumpkin);
+  transition: width 0.25s linear, background 0.25s;
+}
+.countdown-banner.warn {
+  background: #FFF3D1;
+  border-color: #D48806;
+}
+.countdown-banner.warn .cd-time { color: #9A5B00; }
+.countdown-banner.warn .cd-msg { color: #7C4700; }
+.countdown-banner.warn .cd-fill { background: #E09100; }
+.countdown-banner.urgent {
+  background: var(--cranberry);
+  border-color: var(--cranberry-dark);
+  color: #FFF;
+  animation: pulseFast 0.55s infinite alternate;
+}
+.countdown-banner.urgent .cd-time,
+.countdown-banner.urgent .cd-msg { color: #FFF; }
+.countdown-banner.urgent .cd-track { background: rgba(255, 255, 255, 0.28); }
+.countdown-banner.urgent .cd-fill { background: #FFE066; }
+
 .twist-banner {
   background: var(--cranberry);
   color: #FFFDF8;
@@ -2039,32 +2102,79 @@ const AIArt = (() => {
     return Math.round(sim * 100);
   }
 
-  // Grade a Prompt Clone submission against a target challenge
+  const STOP_WORDS = new Set([
+    'the','and','with','from','that','this','into','onto','over','under','near','next','beside','inside',
+    'wearing','holding','riding','sitting','standing','looking','very','cute','nice','good','cool','style',
+    'image','picture','photo','illustration','drawing','painting','scene','background','foreground','front',
+    'back','side','left','right','center','middle','there','their','they','them','some','many','more','most',
+    'like','looks','made','have','has','are','was','were','for','its','his','her','you','your','who','what',
+  ]);
+
+  function extractTokens(text) {
+    return String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/[\s-]+/)
+      .map(w => w.replace(/(ing|ed|es|s)$/, w.length > 5 ? '' : '$1'))
+      .filter(w => w.length >= 3 && !STOP_WORDS.has(w));
+  }
+
+  function lexicalMatch(targetPrompt, userPrompt) {
+    const tToks = [...new Set(extractTokens(targetPrompt))];
+    const uToks = [...new Set(extractTokens(userPrompt))];
+    if (!tToks.length || !uToks.length) return { pct: 10, matched: [], missed: tToks };
+    const matched = [];
+    const missed = [];
+    for (const tw of tToks) {
+      const hit = uToks.some(uw =>
+        uw === tw ||
+        (tw.length >= 4 && uw.startsWith(tw.slice(0, 4))) ||
+        (uw.length >= 4 && tw.startsWith(uw.slice(0, 4)))
+      );
+      if (hit) matched.push(tw);
+      else missed.push(tw);
+    }
+    const recall = matched.length / tToks.length;
+    const precision = matched.length / Math.max(1, uToks.length);
+    // Weighted toward recall (catching target concepts) with precision & detail richness bonus
+    const raw = recall * 0.78 + precision * 0.22;
+    const pct = Math.max(8, Math.min(98, Math.round(raw * 100)));
+    return { pct, matched, missed };
+  }
+
+  // Grade a Prompt Clone submission against a target challenge (wide, fair 10..98 spread, zero 70% clustering!)
   function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas) {
     const t = parsePrompt(targetPrompt);
     const u = parsePrompt(userPrompt);
+    const lex = lexicalMatch(targetPrompt, userPrompt);
     const breakdown = [];
+    const tLower = String(targetPrompt || '').toLowerCase();
+
+    // Only count catalog features that genuinely appear in targetPrompt (never false-match default 'turkey'!)
+    const tHasExplicitSub = SUBJECT_RULES.some(s => s.words.some(w => tLower.includes(w)));
+    const tHasExplicitScene = SCENE_RULES.some(s => s.words.some(w => tLower.includes(w)));
+
     let featurePoints = 0;
     let featureMax = 0;
 
-    // 1. Subjects (weight 35)
-    featureMax += 35;
-    const subHits = t.subjects.filter(s => u.subjects.includes(s));
-    const subScore = Math.round((subHits.length / Math.max(1, t.subjects.length)) * 35);
-    featurePoints += subScore;
-    breakdown.push({
-      label: `Subject (${t.subjectLabels.join(' + ')})`,
-      hit: subHits.length === t.subjects.length,
-      partial: subHits.length > 0 && subHits.length < t.subjects.length,
-    });
+    if (tHasExplicitSub) {
+      featureMax += 35;
+      const subHits = t.subjects.filter(s => u.subjects.includes(s));
+      featurePoints += Math.round((subHits.length / Math.max(1, t.subjects.length)) * 35);
+      breakdown.push({
+        label: `Subject (${t.subjectLabels.join(' + ')})`,
+        hit: subHits.length === t.subjects.length,
+        partial: subHits.length > 0 && subHits.length < t.subjects.length,
+      });
+    }
 
-    // 2. Scene / Setting (weight 25)
-    featureMax += 25;
-    const sceneHit = t.scene === u.scene;
-    if (sceneHit) featurePoints += 25;
-    breakdown.push({ label: `Setting (${t.sceneLabel})`, hit: sceneHit });
+    if (tHasExplicitScene) {
+      featureMax += 25;
+      const sceneHit = t.scene === u.scene;
+      if (sceneHit) featurePoints += 25;
+      breakdown.push({ label: `Setting (${t.sceneLabel})`, hit: sceneHit });
+    }
 
-    // 3. Props / Details (weight 20)
     if (t.props.length > 0) {
       featureMax += 20;
       const propHits = t.props.filter(p => u.props.includes(p));
@@ -2076,7 +2186,6 @@ const AIArt = (() => {
       });
     }
 
-    // 4. Weather / Color (weight 10)
     if (t.weathers.length > 0 || t.colors.length > 0) {
       featureMax += 10;
       const wHit = t.weathers.some(w => u.weathers.includes(w));
@@ -2089,7 +2198,6 @@ const AIArt = (() => {
       breakdown.push({ label: `Mood/Color (${lbl})`, hit, partial: !hit && partial });
     }
 
-    // 5. Art Style (weight 10)
     if (t.style !== 'storybook') {
       featureMax += 10;
       const styleHit = t.style === u.style;
@@ -2097,25 +2205,36 @@ const AIArt = (() => {
       breakdown.push({ label: `Style (${t.styleLabel})`, hit: styleHit });
     }
 
-    const semanticPct = Math.round((featurePoints / Math.max(1, featureMax)) * 100);
-    const visualPct = targetCanvas && userCanvas ? compareCanvases(targetCanvas, userCanvas) : semanticPct;
-    // Penalize empty/super-short prompts
+    // Add key matched/missed word chips when target is a rich studio artwork outside basic catalog
+    if (breakdown.length < 3) {
+      lex.matched.slice(0, 3).forEach(w => breakdown.push({ label: w, hit: true }));
+      lex.missed.slice(0, 2).forEach(w => breakdown.push({ label: w, hit: false }));
+    }
+
+    const semanticPct = featureMax > 0 ? Math.round((featurePoints / featureMax) * 100) : lex.pct;
+    const visualPct = (tHasExplicitSub && targetCanvas && userCanvas) ? compareCanvases(targetCanvas, userCanvas) : lex.pct;
     const wordCount = (userPrompt || '').trim().split(/\s+/).filter(Boolean).length;
-    let total = Math.round(semanticPct * 0.65 + visualPct * 0.35);
-    if (wordCount < 2) total = Math.min(total, 15);
-    total = Math.max(5, Math.min(99, total));
+
+    let total = tHasExplicitSub
+      ? Math.round(lex.pct * 0.50 + semanticPct * 0.35 + visualPct * 0.15)
+      : Math.round(lex.pct * 0.85 + semanticPct * 0.15);
+
+    // Reward descriptive specificity, penalize vague 1-3 word guesses
+    if (wordCount < 2) total = Math.min(total, 14);
+    else if (wordCount < 4) total = Math.min(total, 36);
+    total = Math.max(8, Math.min(98, total));
 
     let comment = '';
-    if (total >= 88) comment = 'Uncanny clone! Are you secretly the AI that drew this?!';
-    else if (total >= 72) comment = 'Spot-on instincts — nailed the big picture and almost every secret detail!';
-    else if (total >= 55) comment = 'Solid resemblance! Got the vibe right, with a couple fun plot twists.';
-    else if (total >= 35) comment = 'Same universe, totally different movie — hilarious creative remix!';
-    else comment = 'Bold abstract interpretation! The AI went on a wild detour with this one.';
+    if (total >= 86) comment = 'Uncanny clone! Are you secretly the AI that drew this?!';
+    else if (total >= 70) comment = 'Strong detective work — nailed the big picture and several key details!';
+    else if (total >= 50) comment = 'Solid direction! Got the core vibe right, with a few creative detours.';
+    else if (total >= 30) comment = 'Same universe, totally different movie — hilarious creative remix!';
+    else comment = 'Wild abstract plot twist! The AI went on a totally unexpected adventure.';
 
-    return { score: total, semanticPct, visualPct, breakdown, comment, parsed: u };
+    return { score: total, semanticPct, visualPct, lexicalPct: lex.pct, breakdown, comment, parsed: u };
   }
 
-  return { parsePrompt, renderToCanvas, renderDataURL, compareCanvases, gradeCloneSubmission };
+  return { parsePrompt, renderToCanvas, renderDataURL, compareCanvases, lexicalMatch, gradeCloneSubmission };
 })();
 
 if (typeof module !== 'undefined') module.exports = AIArt;
@@ -2501,6 +2620,70 @@ const GAME_DATA = {
         asset: 'assets/clone-12.jpg',
         secretPrompt: 'Soft watercolor painting of a silver-haired grandma chef wearing an apron and chef hat holding a pumpkin pie beside a steaming gravy boat in the rain',
         tips: 'Look for the soft watercolor style, the cozy bakery, food details, and rainy puddles!',
+      },
+      {
+        id: 'clone-13',
+        title: 'Origami Samurai Frog',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-13.jpg',
+        secretPrompt: '3D folded origami paper samurai frog wearing red paper armor and helmet holding a paper katana sword on a wet mossy rock in a misty bamboo forest with glowing red paper lanterns',
+        tips: 'Spot the folded origami paper craft style, the warrior amphibian, armor colors, mossy stone, and glowing lanterns!',
+      },
+      {
+        id: 'clone-14',
+        title: 'Steampunk Owl Pilot',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-14.jpg',
+        secretPrompt: 'Steampunk barn owl pilot wearing brass aviator goggles and leather scarf sitting inside a wooden clockwork airship cockpit with copper gears and glowing compasses flying over golden sunset clouds',
+        tips: 'Catch the steampunk fantasy style, bird species, goggles, cockpit instruments, and golden cloud sky!',
+      },
+      {
+        id: 'clone-15',
+        title: 'Claymation Dino Chef',
+        difficulty: 'Medium',
+        asset: 'assets/clone-15.jpg',
+        secretPrompt: 'Stop-motion claymation green T-Rex dinosaur wearing a tall white chef hat and red polka-dot apron flipping golden pancakes in a skillet inside a cozy sunlit miniature kitchen',
+        tips: 'Don\'t miss the sculpted claymation look, apron pattern, flying pancake, and sunlit miniature kitchen!',
+      },
+      {
+        id: 'clone-16',
+        title: 'Stained-Glass Winter Peacock',
+        difficulty: 'Expert',
+        asset: 'assets/clone-16.jpg',
+        secretPrompt: 'Backlit Tiffany stained glass mosaic peacock with sapphire blue emerald green and gold tail feathers perched on a snowy pine branch under a glowing silver crescent moon and starry night sky',
+        tips: 'Name the stained-glass mosaic medium first! Then capture the bird, jewel colors, snowy pines, and crescent moon.',
+      },
+      {
+        id: 'clone-17',
+        title: 'Pop-Art Surfer Corgi',
+        difficulty: 'Medium',
+        asset: 'assets/clone-17.jpg',
+        secretPrompt: 'Retro pop-art comic book illustration with Ben-Day halftone dots of a happy corgi dog wearing pink heart sunglasses surfing a giant curling turquoise ocean wave beside a yellow rubber duck',
+        tips: 'Notice the bold comic-book halftone dots, heart-shaped shades, surfboard colors, and tiny surfing sidekick!',
+      },
+      {
+        id: 'clone-18',
+        title: 'Glowing Mushroom Village',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-18.jpg',
+        secretPrompt: 'Enchanted fantasy forest at twilight with giant bioluminescent turquoise and purple glowing mushroom treehouses with warm round amber windows hanging rope bridges fireflies and a sparkling creek',
+        tips: 'Describe the glowing cyan and purple giant mushrooms, hanging rope bridges, warm windows, and twilight stream!',
+      },
+      {
+        id: 'clone-19',
+        title: '1950s Diner Penguin',
+        difficulty: 'Medium',
+        asset: 'assets/clone-19.jpg',
+        secretPrompt: 'Vintage 1950s chrome American diner photograph with black-and-white checkered floor and turquoise booths featuring an emperor penguin waiter in red bow tie striped vest soda-jerk hat and roller skates carrying a pink strawberry milkshake with cherry',
+        tips: 'Catch the retro 1950s diner photography style, penguin\'s outfit & roller skates, checkered floor, and pink milkshake!',
+      },
+      {
+        id: 'clone-20',
+        title: 'Miniature Tree-Stump Café',
+        difficulty: 'Expert',
+        asset: 'assets/clone-20.jpg',
+        secretPrompt: 'Isometric 3D tilt-shift miniature diorama of a cozy autumn coffee shop carved inside a mossy oak tree stump decorated with warm string lights surrounded by fallen golden leaves with knitted-sweater squirrels drinking coffee at tiny wooden tables',
+        tips: 'Name the miniature 3D tilt-shift diorama style, carved stump café, warm fairy lights, and sweater-wearing customers!',
       },
     ],
   },
@@ -3160,7 +3343,8 @@ const LiveAI = (() => {
     return null;
   }
 
-  // Vision-powered visual resemblance grader comparing Original Target vs Regenerated AI image!
+  // Strict 5-axis Vision resemblance judge (Subject 30 + Setting 20 + Props 20 + Style 15 + Layout/Color 15 = 100)
+  // Eliminates LLM 70%-clustering by summing 5 independent visual rubric axes!
   async function gradeImagesWithVision(targetDataUrl, playerDataUrl, refPrompt, playerPrompt, playerName) {
     const cfg = loadSettings();
     if (!cfg.apiKey || cfg.provider !== 'gemini' || !targetDataUrl || !playerDataUrl) return null;
@@ -3181,19 +3365,47 @@ const LiveAI = (() => {
             body: JSON.stringify({
               contents: [{
                 parts: [
-                  { text: `You are the witty AI art judge for a family Thanksgiving Prompt Clone game. Image 1 is the ORIGINAL target image. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}". Compare Image 2's visual resemblance to Image 1 (subject, setting, props, colors, composition, art style). Return ONLY valid JSON: {"score": integer 0-100, "comment": "1 funny, specific sentence praising what matched or roasting what went hilariously different"}.` },
+                  { text: `You are a strict, fair, witty visual art judge for a competitive Prompt Clone game.
+Image 1 is the ORIGINAL target artwork. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}".
+Grade Image 2 against Image 1 strictly across these 5 visual axes (use exact discriminating integers — NEVER default to 70 or cluster scores around 70/75!):
+- subject (0-30): exact species/character, pose, expression, count (wrong main subject = 0-8)
+- setting (0-20): exact environment, background, time of day, weather
+- props (0-20): clothing, hats, held items, secondary characters/objects (deduct heavily for missing or invented props)
+- style (0-15): exact art medium & rendering style (e.g. claymation vs photo vs watercolor vs origami vs comic vs stained glass; wrong style = 0-5)
+- composition (0-15): color palette, lighting, camera angle, framing
+Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": int, "composition": int, "comment": "1 sharp, specific sentence explaining what matched closely and what differed"}.` },
                   { inlineData: imgA },
                   { inlineData: imgB },
                 ],
               }],
-              generationConfig: { responseMimeType: 'application/json', temperature: 0.6 },
+              generationConfig: { responseMimeType: 'application/json', temperature: 0.35 },
             }),
           }
         );
         if (!res.ok) continue;
         const data = await res.json();
         const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (txt) return JSON.parse(txt);
+        if (txt) {
+          const j = JSON.parse(txt);
+          const clamp = (v, max) => Math.max(0, Math.min(max, Math.round(Number(v) || 0)));
+          if (typeof j.subject === 'number' || typeof j.setting === 'number') {
+            const sub = clamp(j.subject, 30);
+            const set = clamp(j.setting, 20);
+            const prp = clamp(j.props, 20);
+            const sty = clamp(j.style, 15);
+            const cmp = clamp(j.composition, 15);
+            const total = Math.max(5, Math.min(99, sub + set + prp + sty + cmp));
+            const breakdown = [
+              { label: `Subject ${sub}/30`, hit: sub >= 23, partial: sub >= 14 && sub < 23 },
+              { label: `Setting ${set}/20`, hit: set >= 15, partial: set >= 9 && set < 15 },
+              { label: `Props ${prp}/20`, hit: prp >= 15, partial: prp >= 9 && prp < 15 },
+              { label: `Style ${sty}/15`, hit: sty >= 11, partial: sty >= 6 && sty < 11 },
+              { label: `Palette ${cmp}/15`, hit: cmp >= 11, partial: cmp >= 6 && cmp < 11 },
+            ];
+            return { score: total, breakdown, comment: j.comment || '' };
+          }
+          if (typeof j.score === 'number') return j;
+        }
       }
     } catch (_) {}
     return null;
@@ -3385,7 +3597,9 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length); // All 12 rounds have real studio AI target artworks!
+    let deck = shuffle(GAME_DATA.promptClone.challenges.map((_, i) => i));
+    let deckPos = 0;
+    let idx = deck[deckPos];
     let phase = 'lobby'; // lobby | writing | collecting | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;
@@ -3408,6 +3622,40 @@ const Games = (() => {
     let gradingStatus = '';
     let gradingQueue = null;
     let gradingSeen = null;
+
+    function nextChallenge() {
+      deckPos++;
+      if (deckPos >= deck.length) {
+        deck = shuffle(GAME_DATA.promptClone.challenges.map((_, i) => i));
+        deckPos = 0;
+      }
+      idx = deck[deckPos];
+      target = GAME_DATA.promptClone.challenges[idx];
+    }
+
+    function countdownMeta(sec, total) {
+      const s = Math.max(0, Math.ceil(sec));
+      const pct = Math.max(0, Math.min(100, Math.round((s / Math.max(1, total)) * 100)));
+      if (s <= 15) {
+        return { cls: 'urgent', pct, msg: s <= 5 ? '🚨 TIME ALMOST UP! Auto-submitting now!' : '🚨 HURRY! Less than 15s — auto-submits at 0:00!' };
+      }
+      if (s <= 30) {
+        return { cls: 'warn', pct, msg: '⚠️ 30 SECONDS LEFT! Wrap up your prompt!' };
+      }
+      return { cls: '', pct, msg: '⏱️ Time Remaining (auto-submits at 0:00)' };
+    }
+
+    function renderHostCountdownBanner() {
+      const m = countdownMeta(timeLeft, durationSec);
+      return `
+        <div class="countdown-banner ${m.cls}" id="clone-cd-banner">
+          <div class="cd-top">
+            <span class="cd-msg" id="clone-cd-msg">${m.msg}</span>
+            <span class="cd-time" id="clone-timer">${fmtTime(timeLeft)}</span>
+          </div>
+          <div class="cd-track"><div class="cd-fill" id="clone-cd-fill" style="width:${m.pct}%;"></div></div>
+        </div>`;
+    }
 
     function clearCollectTimers() {
       if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
@@ -3479,7 +3727,6 @@ const Games = (() => {
 
     function broadcastPhoneState() {
       if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
-      // Embed results directly in HOST_STATE only if <= 3 players (keeps packet safely < 1.6KB for ntfy.sh!)
       const inlineResults = (phase === 'results' && gradedResults.length <= 3)
         ? gradedResults.map((r, i) => toCompactResult(r, i))
         : null;
@@ -3493,6 +3740,7 @@ const Games = (() => {
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
         difficulty: customTargetImg ? 'Custom' : target.difficulty,
         timeLeft,
+        durationSec,
         deadlineTs: phase === 'writing' ? deadlineTs : 0,
         submittedIds: Object.keys(submissions),
         gradingStatus,
@@ -3619,16 +3867,33 @@ const Games = (() => {
       if (timer) clearInterval(timer);
       timer = setInterval(() => {
         timeLeft--;
-        if (timeLeft <= 10 && timeLeft > 0) SoundFX.tick(0.7);
+        if (timeLeft === 30) {
+          SoundFX.ding();
+          SoundFX.speak('30 seconds left! Wrap up your prompt!');
+        } else if (timeLeft === 15) {
+          SoundFX.tick(1.0);
+        } else if (timeLeft === 10) {
+          SoundFX.tick(1.2);
+          SoundFX.speak('10 seconds left!');
+        } else if (timeLeft < 10 && timeLeft > 0) {
+          SoundFX.tick(0.85 + (10 - timeLeft) * 0.05);
+        }
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
           beginCollectAndGrade();
           return;
         }
+        const m = countdownMeta(timeLeft, durationSec);
+        const banner = document.getElementById('clone-cd-banner');
         const el = document.getElementById('clone-timer');
-        if (el) {
-          el.textContent = fmtTime(timeLeft);
-          if (timeLeft <= 15) el.classList.add('urgent');
+        const msgEl = document.getElementById('clone-cd-msg');
+        const fillEl = document.getElementById('clone-cd-fill');
+        if (el) el.textContent = fmtTime(timeLeft);
+        if (msgEl) msgEl.textContent = m.msg;
+        if (fillEl) fillEl.style.width = `${m.pct}%`;
+        if (banner) {
+          banner.classList.toggle('warn', m.cls === 'warn');
+          banner.classList.toggle('urgent', m.cls === 'urgent');
         }
       }, 1000);
       render();
@@ -3741,21 +4006,27 @@ const Games = (() => {
             }
           }
 
-          // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+          // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
+          const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
           if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
             const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
             const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
             if (vis && typeof vis.score === 'number') {
-              grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
+              // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
+              grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
+              if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
               if (vis.comment) grade.comment = vis.comment;
             }
           } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
             const llm = await LiveAI.askJSON(
-              'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
-              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
+              'You are a strict, fair visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
+              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "comment": "1 sharp sentence explaining what matched and what missed"}`
             );
-            if (llm && typeof llm.score === 'number') {
-              grade.score = Math.max(5, Math.min(100, Math.round(llm.score)));
+            if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
+              const rawScore = typeof llm.subject === 'number'
+                ? Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))
+                : llm.score;
+              grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
               if (llm.comment) grade.comment = llm.comment;
             }
           }
@@ -3805,7 +4076,7 @@ const Games = (() => {
       gradingQueue = null;
       gradingSeen = null;
 
-      finalResults.sort((a, b) => b.score - a.score);
+      finalResults.sort((a, b) => (b.score - a.score) || ((b.lexicalPct || 0) - (a.lexicalPct || 0)) || (b.prompt.length - a.prompt.length));
       gradedResults = finalResults;
       gradedResults._warning = aiWarning;
 
@@ -3897,8 +4168,7 @@ const Games = (() => {
           customTargetImg = null;
           customTargetThumb = null;
           customTargetUrl = null;
-          idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
-          target = GAME_DATA.promptClone.challenges[idx];
+          nextChallenge();
           buildTarget();
           SoundFX.pop();
           render();
@@ -3931,12 +4201,10 @@ const Games = (() => {
         const missing = players.filter(p => !submissions[p.id]);
         root.innerHTML = `
           <div class="stack fade-in">
-            <div class="row-between">
-              <div>
-                <h2>🔍 Recreate This Image!</h2>
-                <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)} · <em>Typed drafts auto-submit when time runs out!</em></p>
-              </div>
-              <div class="timer-box ${timeLeft <= 15 ? 'urgent' : ''}" id="clone-timer">${fmtTime(timeLeft)}</div>
+            ${renderHostCountdownBanner()}
+            <div>
+              <h2 style="margin-bottom:2px;">🔍 Recreate This Image!</h2>
+              <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)}</p>
             </div>
 
             <div class="art-frame" style="max-width:560px;">${targetImgHtml}</div>
@@ -4006,10 +4274,8 @@ const Games = (() => {
         const existing = submissions[p.id]?.text || drafts[p.id]?.text || '';
         root.innerHTML = `
           <div class="stack fade-in">
-            <div class="row-between">
-              <h2>${p.avatar} ${esc(p.name)}'s Secret Prompt</h2>
-              <div class="timer-box ${timeLeft <= 15 ? 'urgent' : ''}" id="clone-timer">${fmtTime(timeLeft)}</div>
-            </div>
+            ${renderHostCountdownBanner()}
+            <h2 style="margin:0;">${p.avatar} ${esc(p.name)}'s Secret Prompt</h2>
             <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             <div class="card stack">
               <label class="small"><strong>Describe everything you see</strong> (subjects, setting, props, colors, weather, art style!):</label>
@@ -4142,8 +4408,7 @@ const Games = (() => {
           customTargetUrl = null;
           drafts = {};
           gradingStatus = '';
-          idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
-          target = GAME_DATA.promptClone.challenges[idx];
+          nextChallenge();
           buildTarget();
           phase = 'lobby';
           broadcastPhoneState();
@@ -6581,6 +6846,9 @@ const App = (() => {
     let submitRetryTimer = null;
     let deadlineTimer = null;
     let deadlineRoundKey = '';
+    let phoneCountdownTimer = null;
+    let phoneWarned30 = false;
+    let phoneWarned15 = false;
     let activeBotRound = '';
     let botDraft = '';
     let cachedTargetKey = '';
@@ -6588,6 +6856,79 @@ const App = (() => {
     const receivedImages = {}; // imgKey -> dataUrl
     const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
     const localGenCache = {}; // prompt -> dataUrl
+
+    function fmtPhoneTime(sec) {
+      const s = Math.max(0, Math.ceil(sec));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}:${r < 10 ? '0' : ''}${r}`;
+    }
+
+    function phoneCountdownMeta(sec, total) {
+      const s = Math.max(0, Math.ceil(sec));
+      const pct = Math.max(0, Math.min(100, Math.round((s / Math.max(1, total)) * 100)));
+      if (s <= 15) {
+        return { cls: 'urgent', pct, msg: s <= 5 ? '🚨 TIME UP! Auto-submitting!' : '🚨 HURRY! <15s — auto-submits at 0:00!' };
+      }
+      if (s <= 30) {
+        return { cls: 'warn', pct, msg: '⚠️ 30 SECONDS LEFT! Finish your prompt!' };
+      }
+      return { cls: '', pct, msg: '⏱️ Time Remaining' };
+    }
+
+    function renderPhoneCountdownBanner(payload) {
+      const total = Number(payload.durationSec) || 180;
+      const secLeft = payload.deadlineTs
+        ? Math.max(0, (Number(payload.deadlineTs) - Date.now()) / 1000)
+        : (Number(payload.timeLeft) || total);
+      const m = phoneCountdownMeta(secLeft, total);
+      return `
+        <div class="countdown-banner ${m.cls}" id="p-cd-banner">
+          <div class="cd-top">
+            <span class="cd-msg" id="p-cd-msg">${m.msg}</span>
+            <span class="cd-time" id="p-cd-time">${fmtPhoneTime(secLeft)}</span>
+          </div>
+          <div class="cd-track"><div class="cd-fill" id="p-cd-fill" style="width:${m.pct}%;"></div></div>
+        </div>`;
+    }
+
+    function stopPhoneCountdown() {
+      if (phoneCountdownTimer) { clearInterval(phoneCountdownTimer); phoneCountdownTimer = null; }
+    }
+
+    function syncPhoneCountdown(payload) {
+      stopPhoneCountdown();
+      if (!payload || !payload.deadlineTs) return;
+      const total = Number(payload.durationSec) || 180;
+      const deadline = Number(payload.deadlineTs);
+      const tick = () => {
+        const sec = Math.max(0, (deadline - Date.now()) / 1000);
+        const sCeil = Math.ceil(sec);
+        if (sCeil <= 30 && sCeil > 15 && !phoneWarned30) {
+          phoneWarned30 = true;
+          SoundFX.ding();
+        }
+        if (sCeil <= 15 && sCeil > 0 && !phoneWarned15) {
+          phoneWarned15 = true;
+          SoundFX.tick(1.1);
+        }
+        const m = phoneCountdownMeta(sec, total);
+        const banner = document.getElementById('p-cd-banner');
+        const tEl = document.getElementById('p-cd-time');
+        const msgEl = document.getElementById('p-cd-msg');
+        const fillEl = document.getElementById('p-cd-fill');
+        if (tEl) tEl.textContent = fmtPhoneTime(sec);
+        if (msgEl) msgEl.textContent = m.msg;
+        if (fillEl) fillEl.style.width = `${m.pct}%`;
+        if (banner) {
+          banner.classList.toggle('warn', m.cls === 'warn');
+          banner.classList.toggle('urgent', m.cls === 'urgent');
+        }
+        if (sec <= 0) stopPhoneCountdown();
+      };
+      tick();
+      phoneCountdownTimer = setInterval(tick, 300);
+    }
 
     function clearDraftSync() {
       if (draftSyncTimer) { clearTimeout(draftSyncTimer); draftSyncTimer = null; }
@@ -6948,6 +7289,9 @@ const App = (() => {
         clearDraftSync();
         clearSubmitRetry();
         clearDeadlineWatchdog();
+        stopPhoneCountdown();
+        phoneWarned30 = false;
+        phoneWarned15 = false;
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
         lastSyncedDraft = '';
@@ -7019,7 +7363,9 @@ const App = (() => {
       if (game === 'promptClone' && phase === 'writing') {
         const imgHtml = getPhoneCloneImageHtml(payload);
         const myPreviewUrl = mySubmittedClonePrompt ? getLocalArt(mySubmittedClonePrompt) : '';
+        const cdBanner = renderPhoneCountdownBanner(payload);
         body = cloneAlready ? `
+          ${cdBanner}
           <div class="card center stack">
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
@@ -7035,6 +7381,7 @@ const App = (() => {
               <div id="phone-target-slot">${imgHtml}</div>
             `}
           </div>` : `
+          ${cdBanner}
           <div class="card stack">
             <div class="row-between">
               <span class="tag tag-new">PROMPT CLONE · ${esc(payload.difficulty || '')}</span>
@@ -7045,11 +7392,11 @@ const App = (() => {
             <p class="xs muted" style="margin:0;">💡 Hint: ${esc(payload.tips || 'Describe subjects, setting, props, colors, and art style!')}</p>
             <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style...">${esc(cloneDraft)}</textarea>
             <div class="chip-wrap">
-              ${['pixel art', 'neon', 'vintage', 'watercolor', 'ink sketch', 'sunset', 'outer space', 'sunglasses', 'crown', 'rainbow'].map(c =>
+              ${['origami', 'claymation', 'stained glass', 'steampunk', 'pop-art comic', 'miniature 3D', 'watercolor', 'pixel art', 'neon', 'vintage photo'].map(c =>
                 `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
             </div>
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
-            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits when time runs out!</p>
+            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits at 0:00!</p>
           </div>`;
       } else if (game === 'promptClone' && phase === 'collecting') {
         body = `
@@ -7190,6 +7537,9 @@ const App = (() => {
 
       const syncBtn = document.getElementById('p-sync-btn');
       if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(true); };
+
+      if (game === 'promptClone' && phase === 'writing') syncPhoneCountdown(payload);
+      else stopPhoneCountdown();
 
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');

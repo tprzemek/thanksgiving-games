@@ -649,7 +649,8 @@ const LiveAI = (() => {
     return null;
   }
 
-  // Vision-powered visual resemblance grader comparing Original Target vs Regenerated AI image!
+  // Strict 5-axis Vision resemblance judge (Subject 30 + Setting 20 + Props 20 + Style 15 + Layout/Color 15 = 100)
+  // Eliminates LLM 70%-clustering by summing 5 independent visual rubric axes!
   async function gradeImagesWithVision(targetDataUrl, playerDataUrl, refPrompt, playerPrompt, playerName) {
     const cfg = loadSettings();
     if (!cfg.apiKey || cfg.provider !== 'gemini' || !targetDataUrl || !playerDataUrl) return null;
@@ -670,19 +671,47 @@ const LiveAI = (() => {
             body: JSON.stringify({
               contents: [{
                 parts: [
-                  { text: `You are the witty AI art judge for a family Thanksgiving Prompt Clone game. Image 1 is the ORIGINAL target image. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}". Compare Image 2's visual resemblance to Image 1 (subject, setting, props, colors, composition, art style). Return ONLY valid JSON: {"score": integer 0-100, "comment": "1 funny, specific sentence praising what matched or roasting what went hilariously different"}.` },
+                  { text: `You are a strict, fair, witty visual art judge for a competitive Prompt Clone game.
+Image 1 is the ORIGINAL target artwork. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}".
+Grade Image 2 against Image 1 strictly across these 5 visual axes (use exact discriminating integers — NEVER default to 70 or cluster scores around 70/75!):
+- subject (0-30): exact species/character, pose, expression, count (wrong main subject = 0-8)
+- setting (0-20): exact environment, background, time of day, weather
+- props (0-20): clothing, hats, held items, secondary characters/objects (deduct heavily for missing or invented props)
+- style (0-15): exact art medium & rendering style (e.g. claymation vs photo vs watercolor vs origami vs comic vs stained glass; wrong style = 0-5)
+- composition (0-15): color palette, lighting, camera angle, framing
+Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": int, "composition": int, "comment": "1 sharp, specific sentence explaining what matched closely and what differed"}.` },
                   { inlineData: imgA },
                   { inlineData: imgB },
                 ],
               }],
-              generationConfig: { responseMimeType: 'application/json', temperature: 0.6 },
+              generationConfig: { responseMimeType: 'application/json', temperature: 0.35 },
             }),
           }
         );
         if (!res.ok) continue;
         const data = await res.json();
         const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (txt) return JSON.parse(txt);
+        if (txt) {
+          const j = JSON.parse(txt);
+          const clamp = (v, max) => Math.max(0, Math.min(max, Math.round(Number(v) || 0)));
+          if (typeof j.subject === 'number' || typeof j.setting === 'number') {
+            const sub = clamp(j.subject, 30);
+            const set = clamp(j.setting, 20);
+            const prp = clamp(j.props, 20);
+            const sty = clamp(j.style, 15);
+            const cmp = clamp(j.composition, 15);
+            const total = Math.max(5, Math.min(99, sub + set + prp + sty + cmp));
+            const breakdown = [
+              { label: `Subject ${sub}/30`, hit: sub >= 23, partial: sub >= 14 && sub < 23 },
+              { label: `Setting ${set}/20`, hit: set >= 15, partial: set >= 9 && set < 15 },
+              { label: `Props ${prp}/20`, hit: prp >= 15, partial: prp >= 9 && prp < 15 },
+              { label: `Style ${sty}/15`, hit: sty >= 11, partial: sty >= 6 && sty < 11 },
+              { label: `Palette ${cmp}/15`, hit: cmp >= 11, partial: cmp >= 6 && cmp < 11 },
+            ];
+            return { score: total, breakdown, comment: j.comment || '' };
+          }
+          if (typeof j.score === 'number') return j;
+        }
       }
     } catch (_) {}
     return null;

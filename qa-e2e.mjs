@@ -192,9 +192,9 @@ async function main() {
     assert(hostTargetW > 200, `Host renders real AI target artwork (${hostTargetW}px wide)`);
 
     await host.click('#clone-start');
-    await g1.waitFor(`!!document.getElementById('p-clone-in') && document.querySelector('#phone-target-slot img')?.complete && document.querySelector('#phone-target-slot img')?.naturalWidth > 200`);
-    await g2.waitFor(`!!document.getElementById('p-clone-in') && document.querySelector('#phone-target-slot img')?.complete && document.querySelector('#phone-target-slot img')?.naturalWidth > 200`);
-    assert(true, 'BOTH Alice and Bob see the exact Target Picture right on their own phones!');
+    await g1.waitFor(`!!document.getElementById('p-clone-in') && !!document.getElementById('p-cd-time') && document.querySelector('#phone-target-slot img')?.complete && document.querySelector('#phone-target-slot img')?.naturalWidth > 200`);
+    await g2.waitFor(`!!document.getElementById('p-clone-in') && !!document.getElementById('p-cd-time') && document.querySelector('#phone-target-slot img')?.complete && document.querySelector('#phone-target-slot img')?.naturalWidth > 200`);
+    assert(true, 'BOTH Alice and Bob see the exact Target Picture AND live sticky countdown timer right on their own phones!');
 
     // CRITICAL REGRESSION TEST: Alice types draft & NEVER clicks Lock In; Bob submits -> Alice's draft MUST NOT be deleted!
     const aliceDraft = 'A cheerful cartoon turkey wearing black sunglasses on a red skateboard at golden sunset with falling leaves';

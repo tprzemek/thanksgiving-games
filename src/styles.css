@@ -387,6 +387,69 @@ h3 {
   animation: pulseFast 0.6s infinite alternate;
 }
 
+.countdown-banner {
+  position: sticky;
+  top: 6px;
+  z-index: 30;
+  background: var(--surface);
+  border: 2px solid var(--pumpkin);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  box-shadow: 0 6px 20px rgba(43, 30, 22, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background 0.25s, border-color 0.25s, color 0.25s;
+}
+.countdown-banner .cd-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.countdown-banner .cd-time {
+  font-family: var(--font-mono);
+  font-size: clamp(1.6rem, 4.8vw, 2.2rem);
+  font-weight: 900;
+  line-height: 1;
+  color: var(--pumpkin-dark);
+}
+.countdown-banner .cd-msg {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--ink);
+}
+.countdown-banner .cd-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(43, 30, 22, 0.12);
+  overflow: hidden;
+}
+.countdown-banner .cd-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--pumpkin);
+  transition: width 0.25s linear, background 0.25s;
+}
+.countdown-banner.warn {
+  background: #FFF3D1;
+  border-color: #D48806;
+}
+.countdown-banner.warn .cd-time { color: #9A5B00; }
+.countdown-banner.warn .cd-msg { color: #7C4700; }
+.countdown-banner.warn .cd-fill { background: #E09100; }
+.countdown-banner.urgent {
+  background: var(--cranberry);
+  border-color: var(--cranberry-dark);
+  color: #FFF;
+  animation: pulseFast 0.55s infinite alternate;
+}
+.countdown-banner.urgent .cd-time,
+.countdown-banner.urgent .cd-msg { color: #FFF; }
+.countdown-banner.urgent .cd-track { background: rgba(255, 255, 255, 0.28); }
+.countdown-banner.urgent .cd-fill { background: #FFE066; }
+
 .twist-banner {
   background: var(--cranberry);
   color: #FFFDF8;

@@ -1016,6 +1016,9 @@ const App = (() => {
     let submitRetryTimer = null;
     let deadlineTimer = null;
     let deadlineRoundKey = '';
+    let phoneCountdownTimer = null;
+    let phoneWarned30 = false;
+    let phoneWarned15 = false;
     let activeBotRound = '';
     let botDraft = '';
     let cachedTargetKey = '';
@@ -1023,6 +1026,79 @@ const App = (() => {
     const receivedImages = {}; // imgKey -> dataUrl
     const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
     const localGenCache = {}; // prompt -> dataUrl
+
+    function fmtPhoneTime(sec) {
+      const s = Math.max(0, Math.ceil(sec));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}:${r < 10 ? '0' : ''}${r}`;
+    }
+
+    function phoneCountdownMeta(sec, total) {
+      const s = Math.max(0, Math.ceil(sec));
+      const pct = Math.max(0, Math.min(100, Math.round((s / Math.max(1, total)) * 100)));
+      if (s <= 15) {
+        return { cls: 'urgent', pct, msg: s <= 5 ? '🚨 TIME UP! Auto-submitting!' : '🚨 HURRY! <15s — auto-submits at 0:00!' };
+      }
+      if (s <= 30) {
+        return { cls: 'warn', pct, msg: '⚠️ 30 SECONDS LEFT! Finish your prompt!' };
+      }
+      return { cls: '', pct, msg: '⏱️ Time Remaining' };
+    }
+
+    function renderPhoneCountdownBanner(payload) {
+      const total = Number(payload.durationSec) || 180;
+      const secLeft = payload.deadlineTs
+        ? Math.max(0, (Number(payload.deadlineTs) - Date.now()) / 1000)
+        : (Number(payload.timeLeft) || total);
+      const m = phoneCountdownMeta(secLeft, total);
+      return `
+        <div class="countdown-banner ${m.cls}" id="p-cd-banner">
+          <div class="cd-top">
+            <span class="cd-msg" id="p-cd-msg">${m.msg}</span>
+            <span class="cd-time" id="p-cd-time">${fmtPhoneTime(secLeft)}</span>
+          </div>
+          <div class="cd-track"><div class="cd-fill" id="p-cd-fill" style="width:${m.pct}%;"></div></div>
+        </div>`;
+    }
+
+    function stopPhoneCountdown() {
+      if (phoneCountdownTimer) { clearInterval(phoneCountdownTimer); phoneCountdownTimer = null; }
+    }
+
+    function syncPhoneCountdown(payload) {
+      stopPhoneCountdown();
+      if (!payload || !payload.deadlineTs) return;
+      const total = Number(payload.durationSec) || 180;
+      const deadline = Number(payload.deadlineTs);
+      const tick = () => {
+        const sec = Math.max(0, (deadline - Date.now()) / 1000);
+        const sCeil = Math.ceil(sec);
+        if (sCeil <= 30 && sCeil > 15 && !phoneWarned30) {
+          phoneWarned30 = true;
+          SoundFX.ding();
+        }
+        if (sCeil <= 15 && sCeil > 0 && !phoneWarned15) {
+          phoneWarned15 = true;
+          SoundFX.tick(1.1);
+        }
+        const m = phoneCountdownMeta(sec, total);
+        const banner = document.getElementById('p-cd-banner');
+        const tEl = document.getElementById('p-cd-time');
+        const msgEl = document.getElementById('p-cd-msg');
+        const fillEl = document.getElementById('p-cd-fill');
+        if (tEl) tEl.textContent = fmtPhoneTime(sec);
+        if (msgEl) msgEl.textContent = m.msg;
+        if (fillEl) fillEl.style.width = `${m.pct}%`;
+        if (banner) {
+          banner.classList.toggle('warn', m.cls === 'warn');
+          banner.classList.toggle('urgent', m.cls === 'urgent');
+        }
+        if (sec <= 0) stopPhoneCountdown();
+      };
+      tick();
+      phoneCountdownTimer = setInterval(tick, 300);
+    }
 
     function clearDraftSync() {
       if (draftSyncTimer) { clearTimeout(draftSyncTimer); draftSyncTimer = null; }
@@ -1383,6 +1459,9 @@ const App = (() => {
         clearDraftSync();
         clearSubmitRetry();
         clearDeadlineWatchdog();
+        stopPhoneCountdown();
+        phoneWarned30 = false;
+        phoneWarned15 = false;
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
         lastSyncedDraft = '';
@@ -1454,7 +1533,9 @@ const App = (() => {
       if (game === 'promptClone' && phase === 'writing') {
         const imgHtml = getPhoneCloneImageHtml(payload);
         const myPreviewUrl = mySubmittedClonePrompt ? getLocalArt(mySubmittedClonePrompt) : '';
+        const cdBanner = renderPhoneCountdownBanner(payload);
         body = cloneAlready ? `
+          ${cdBanner}
           <div class="card center stack">
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
@@ -1470,6 +1551,7 @@ const App = (() => {
               <div id="phone-target-slot">${imgHtml}</div>
             `}
           </div>` : `
+          ${cdBanner}
           <div class="card stack">
             <div class="row-between">
               <span class="tag tag-new">PROMPT CLONE · ${esc(payload.difficulty || '')}</span>
@@ -1480,11 +1562,11 @@ const App = (() => {
             <p class="xs muted" style="margin:0;">💡 Hint: ${esc(payload.tips || 'Describe subjects, setting, props, colors, and art style!')}</p>
             <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style...">${esc(cloneDraft)}</textarea>
             <div class="chip-wrap">
-              ${['pixel art', 'neon', 'vintage', 'watercolor', 'ink sketch', 'sunset', 'outer space', 'sunglasses', 'crown', 'rainbow'].map(c =>
+              ${['origami', 'claymation', 'stained glass', 'steampunk', 'pop-art comic', 'miniature 3D', 'watercolor', 'pixel art', 'neon', 'vintage photo'].map(c =>
                 `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
             </div>
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
-            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits when time runs out!</p>
+            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits at 0:00!</p>
           </div>`;
       } else if (game === 'promptClone' && phase === 'collecting') {
         body = `
@@ -1625,6 +1707,9 @@ const App = (() => {
 
       const syncBtn = document.getElementById('p-sync-btn');
       if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(true); };
+
+      if (game === 'promptClone' && phase === 'writing') syncPhoneCountdown(payload);
+      else stopPhoneCountdown();
 
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');

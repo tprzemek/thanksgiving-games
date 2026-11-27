@@ -881,32 +881,79 @@ const AIArt = (() => {
     return Math.round(sim * 100);
   }
 
-  // Grade a Prompt Clone submission against a target challenge
+  const STOP_WORDS = new Set([
+    'the','and','with','from','that','this','into','onto','over','under','near','next','beside','inside',
+    'wearing','holding','riding','sitting','standing','looking','very','cute','nice','good','cool','style',
+    'image','picture','photo','illustration','drawing','painting','scene','background','foreground','front',
+    'back','side','left','right','center','middle','there','their','they','them','some','many','more','most',
+    'like','looks','made','have','has','are','was','were','for','its','his','her','you','your','who','what',
+  ]);
+
+  function extractTokens(text) {
+    return String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/[\s-]+/)
+      .map(w => w.replace(/(ing|ed|es|s)$/, w.length > 5 ? '' : '$1'))
+      .filter(w => w.length >= 3 && !STOP_WORDS.has(w));
+  }
+
+  function lexicalMatch(targetPrompt, userPrompt) {
+    const tToks = [...new Set(extractTokens(targetPrompt))];
+    const uToks = [...new Set(extractTokens(userPrompt))];
+    if (!tToks.length || !uToks.length) return { pct: 10, matched: [], missed: tToks };
+    const matched = [];
+    const missed = [];
+    for (const tw of tToks) {
+      const hit = uToks.some(uw =>
+        uw === tw ||
+        (tw.length >= 4 && uw.startsWith(tw.slice(0, 4))) ||
+        (uw.length >= 4 && tw.startsWith(uw.slice(0, 4)))
+      );
+      if (hit) matched.push(tw);
+      else missed.push(tw);
+    }
+    const recall = matched.length / tToks.length;
+    const precision = matched.length / Math.max(1, uToks.length);
+    // Weighted toward recall (catching target concepts) with precision & detail richness bonus
+    const raw = recall * 0.78 + precision * 0.22;
+    const pct = Math.max(8, Math.min(98, Math.round(raw * 100)));
+    return { pct, matched, missed };
+  }
+
+  // Grade a Prompt Clone submission against a target challenge (wide, fair 10..98 spread, zero 70% clustering!)
   function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas) {
     const t = parsePrompt(targetPrompt);
     const u = parsePrompt(userPrompt);
+    const lex = lexicalMatch(targetPrompt, userPrompt);
     const breakdown = [];
+    const tLower = String(targetPrompt || '').toLowerCase();
+
+    // Only count catalog features that genuinely appear in targetPrompt (never false-match default 'turkey'!)
+    const tHasExplicitSub = SUBJECT_RULES.some(s => s.words.some(w => tLower.includes(w)));
+    const tHasExplicitScene = SCENE_RULES.some(s => s.words.some(w => tLower.includes(w)));
+
     let featurePoints = 0;
     let featureMax = 0;
 
-    // 1. Subjects (weight 35)
-    featureMax += 35;
-    const subHits = t.subjects.filter(s => u.subjects.includes(s));
-    const subScore = Math.round((subHits.length / Math.max(1, t.subjects.length)) * 35);
-    featurePoints += subScore;
-    breakdown.push({
-      label: `Subject (${t.subjectLabels.join(' + ')})`,
-      hit: subHits.length === t.subjects.length,
-      partial: subHits.length > 0 && subHits.length < t.subjects.length,
-    });
+    if (tHasExplicitSub) {
+      featureMax += 35;
+      const subHits = t.subjects.filter(s => u.subjects.includes(s));
+      featurePoints += Math.round((subHits.length / Math.max(1, t.subjects.length)) * 35);
+      breakdown.push({
+        label: `Subject (${t.subjectLabels.join(' + ')})`,
+        hit: subHits.length === t.subjects.length,
+        partial: subHits.length > 0 && subHits.length < t.subjects.length,
+      });
+    }
 
-    // 2. Scene / Setting (weight 25)
-    featureMax += 25;
-    const sceneHit = t.scene === u.scene;
-    if (sceneHit) featurePoints += 25;
-    breakdown.push({ label: `Setting (${t.sceneLabel})`, hit: sceneHit });
+    if (tHasExplicitScene) {
+      featureMax += 25;
+      const sceneHit = t.scene === u.scene;
+      if (sceneHit) featurePoints += 25;
+      breakdown.push({ label: `Setting (${t.sceneLabel})`, hit: sceneHit });
+    }
 
-    // 3. Props / Details (weight 20)
     if (t.props.length > 0) {
       featureMax += 20;
       const propHits = t.props.filter(p => u.props.includes(p));
@@ -918,7 +965,6 @@ const AIArt = (() => {
       });
     }
 
-    // 4. Weather / Color (weight 10)
     if (t.weathers.length > 0 || t.colors.length > 0) {
       featureMax += 10;
       const wHit = t.weathers.some(w => u.weathers.includes(w));
@@ -931,7 +977,6 @@ const AIArt = (() => {
       breakdown.push({ label: `Mood/Color (${lbl})`, hit, partial: !hit && partial });
     }
 
-    // 5. Art Style (weight 10)
     if (t.style !== 'storybook') {
       featureMax += 10;
       const styleHit = t.style === u.style;
@@ -939,25 +984,36 @@ const AIArt = (() => {
       breakdown.push({ label: `Style (${t.styleLabel})`, hit: styleHit });
     }
 
-    const semanticPct = Math.round((featurePoints / Math.max(1, featureMax)) * 100);
-    const visualPct = targetCanvas && userCanvas ? compareCanvases(targetCanvas, userCanvas) : semanticPct;
-    // Penalize empty/super-short prompts
+    // Add key matched/missed word chips when target is a rich studio artwork outside basic catalog
+    if (breakdown.length < 3) {
+      lex.matched.slice(0, 3).forEach(w => breakdown.push({ label: w, hit: true }));
+      lex.missed.slice(0, 2).forEach(w => breakdown.push({ label: w, hit: false }));
+    }
+
+    const semanticPct = featureMax > 0 ? Math.round((featurePoints / featureMax) * 100) : lex.pct;
+    const visualPct = (tHasExplicitSub && targetCanvas && userCanvas) ? compareCanvases(targetCanvas, userCanvas) : lex.pct;
     const wordCount = (userPrompt || '').trim().split(/\s+/).filter(Boolean).length;
-    let total = Math.round(semanticPct * 0.65 + visualPct * 0.35);
-    if (wordCount < 2) total = Math.min(total, 15);
-    total = Math.max(5, Math.min(99, total));
+
+    let total = tHasExplicitSub
+      ? Math.round(lex.pct * 0.50 + semanticPct * 0.35 + visualPct * 0.15)
+      : Math.round(lex.pct * 0.85 + semanticPct * 0.15);
+
+    // Reward descriptive specificity, penalize vague 1-3 word guesses
+    if (wordCount < 2) total = Math.min(total, 14);
+    else if (wordCount < 4) total = Math.min(total, 36);
+    total = Math.max(8, Math.min(98, total));
 
     let comment = '';
-    if (total >= 88) comment = 'Uncanny clone! Are you secretly the AI that drew this?!';
-    else if (total >= 72) comment = 'Spot-on instincts — nailed the big picture and almost every secret detail!';
-    else if (total >= 55) comment = 'Solid resemblance! Got the vibe right, with a couple fun plot twists.';
-    else if (total >= 35) comment = 'Same universe, totally different movie — hilarious creative remix!';
-    else comment = 'Bold abstract interpretation! The AI went on a wild detour with this one.';
+    if (total >= 86) comment = 'Uncanny clone! Are you secretly the AI that drew this?!';
+    else if (total >= 70) comment = 'Strong detective work — nailed the big picture and several key details!';
+    else if (total >= 50) comment = 'Solid direction! Got the core vibe right, with a few creative detours.';
+    else if (total >= 30) comment = 'Same universe, totally different movie — hilarious creative remix!';
+    else comment = 'Wild abstract plot twist! The AI went on a totally unexpected adventure.';
 
-    return { score: total, semanticPct, visualPct, breakdown, comment, parsed: u };
+    return { score: total, semanticPct, visualPct, lexicalPct: lex.pct, breakdown, comment, parsed: u };
   }
 
-  return { parsePrompt, renderToCanvas, renderDataURL, compareCanvases, gradeCloneSubmission };
+  return { parsePrompt, renderToCanvas, renderDataURL, compareCanvases, lexicalMatch, gradeCloneSubmission };
 })();
 
 if (typeof module !== 'undefined') module.exports = AIArt;

@@ -32,6 +32,9 @@ const Games = (() => {
     let timeLeft = 180;
     let timer = null;
     let collectTimer = null;
+    let collectPolls = [];
+    let broadcastDebounce = null;
+    let deadlineTs = 0;
     let target = GAME_DATA.promptClone.challenges[idx];
     let roundId = 0;
     let customTargetImg = null; // Optional uploaded/custom image dataURL
@@ -44,10 +47,19 @@ const Games = (() => {
     let passIdx = 0;
     let gradedResults = [];
     let gradingStatus = '';
+    let gradingQueue = null;
+    let gradingSeen = null;
+
+    function clearCollectTimers() {
+      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      collectPolls.forEach(t => clearTimeout(t));
+      collectPolls = [];
+    }
 
     function cleanup() {
       if (timer) { clearInterval(timer); timer = null; }
-      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      clearCollectTimers();
+      if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
       SoundFX.stopSpeech();
     }
 
@@ -107,6 +119,7 @@ const Games = (() => {
     let resultsUrl = null; // Atomic hosted JSON containing ALL ranked participants + direct image URLs
 
     function broadcastPhoneState() {
+      if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
       // Embed results directly in HOST_STATE only if <= 3 players (keeps packet safely < 1.6KB for ntfy.sh!)
       const inlineResults = (phase === 'results' && gradedResults.length <= 3)
         ? gradedResults.map((r, i) => toCompactResult(r, i))
@@ -121,6 +134,7 @@ const Games = (() => {
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
         difficulty: customTargetImg ? 'Custom' : target.difficulty,
         timeLeft,
+        deadlineTs: phase === 'writing' ? deadlineTs : 0,
         submittedIds: Object.keys(submissions),
         gradingStatus,
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
@@ -128,6 +142,15 @@ const Games = (() => {
         resultsUrl: phase === 'results' ? resultsUrl : null,
         results: inlineResults,
       });
+    }
+
+    // Coalesce burst submissions from 10+ phones into 1 HOST_STATE broadcast so ntfy.sh never rate-limits!
+    function scheduleBroadcastPhoneState(delayMs = 500) {
+      if (broadcastDebounce) return;
+      broadcastDebounce = setTimeout(() => {
+        broadcastDebounce = null;
+        broadcastPhoneState();
+      }, delayMs);
     }
 
     async function broadcastResultsToPhones() {
@@ -173,8 +196,9 @@ const Games = (() => {
     }
 
     function onPhoneAction(msg) {
-      if (phase !== 'writing' && phase !== 'collecting') return;
+      if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading') return;
       if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
+        if (phase === 'grading') return;
         const clean = msg.value.trim();
         if (!clean) { delete drafts[msg.playerId]; return; }
         const p = ensureGuestPlayer(msg);
@@ -191,18 +215,24 @@ const Games = (() => {
         const clean = String(msg.value).trim();
         if (!clean) return;
         const p = ensureGuestPlayer(msg);
-        submissions[msg.playerId] = {
+        const subObj = {
           text: clean,
           playerName: p ? p.name : (msg.playerName || 'Guest'),
           avatar: p ? p.avatar : (msg.avatar || '🦃'),
           autoCollected: !!msg.autoCollected,
           ts: Date.now(),
         };
+        submissions[msg.playerId] = subObj;
         delete drafts[msg.playerId];
+
         if (phase === 'writing') {
           SoundFX.pop();
-          broadcastPhoneState();
+          scheduleBroadcastPhoneState(300);
           render();
+        } else if (phase === 'grading' && gradingQueue && gradingSeen && !gradingSeen.has(msg.playerId)) {
+          // Late arrival caught while AI is still painting — include them seamlessly!
+          gradingSeen.add(msg.playerId);
+          gradingQueue.push([msg.playerId, subObj]);
         }
       }
     }
@@ -214,7 +244,10 @@ const Games = (() => {
       drafts = {};
       gradedResults = [];
       resultsUrl = null;
+      gradingQueue = null;
+      gradingSeen = null;
       timeLeft = durationSec;
+      deadlineTs = Date.now() + durationSec * 1000;
       phase = 'writing';
       if (customTargetImg && customTargetThumb && !customTargetUrl) {
         customTargetUrl = await RoomSync.uploadImage(customTargetThumb);
@@ -246,15 +279,24 @@ const Games = (() => {
     // Auto-collect every participant's typed draft (even if they didn't press Lock In!) before grading
     function beginCollectAndGrade() {
       if (timer) { clearInterval(timer); timer = null; }
-      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      clearCollectTimers();
       phase = 'collecting';
       gradingStatus = '⏱️ Time\'s up! Auto-collecting everyone\'s typed prompts (even if they didn\'t tap Lock In)...';
       SoundFX.buzzer();
       broadcastPhoneState();
       render();
 
+      const isCloud = RoomSync.getMode() === 'cloud';
+      const sweepMs = isCloud ? 4600 : 1500;
+      if (isCloud) {
+        // Actively poll ntfy.sh during the sweep so no phone submission sits unread on SSE hiccups
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 1400));
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 2800));
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 4100));
+      }
+
       collectTimer = setTimeout(() => {
-        collectTimer = null;
+        clearCollectTimers();
         // Merge any auto-saved drafts that weren't explicitly locked in!
         for (const [pid, d] of Object.entries(drafts)) {
           if (!submissions[pid] && d && d.text) {
@@ -270,7 +312,7 @@ const Games = (() => {
           return;
         }
         gradeAll();
-      }, 2000);
+      }, sweepMs);
     }
 
     async function assetToThumbDataUrl(assetPath) {
@@ -293,6 +335,7 @@ const Games = (() => {
 
     async function gradeAll() {
       if (timer) { clearInterval(timer); timer = null; }
+      clearCollectTimers();
       phase = 'grading';
       gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
       broadcastPhoneState();
@@ -300,8 +343,9 @@ const Games = (() => {
 
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
-      const players = App.getPlayers();
-      const entries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
+      const initialEntries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
+      gradingQueue = [...initialEntries];
+      gradingSeen = new Set(initialEntries.map(([pid]) => pid));
 
       // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
       let targetVisionDataUrl = null;
@@ -311,50 +355,56 @@ const Games = (() => {
           : await assetToThumbDataUrl(target.asset);
       }
 
-      const results = new Array(entries.length);
+      const results = [];
       let completedCount = 0;
       let aiWarning = '';
 
-      async function processOne(i) {
-        const [pid, sub] = entries[i];
+      async function processEntry(i, pid, sub) {
+        const players = App.getPlayers();
         const p = players.find(x => x.id === pid) || {
           id: pid,
           name: sub.playerName || 'Player',
           avatar: sub.avatar || '🦃',
         };
         const gen = AIArt.renderDataURL(sub.text, 440, 300);
-
-        // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
-        const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
-        if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
-
-        // 2. Upload crisp JPEG of any generated AI image in 1 single HTTP request so ALL 10+ phones see EVERY player's real Nano Banana image!
-        let sharedUrl = aiImg.url || null;
-        if (!sharedUrl && aiImg.dataUrl) {
-          const hiRes = await makeThumb(aiImg.dataUrl, 640, 0.78);
-          if (hiRes) {
-            sharedUrl = await RoomSync.uploadImage(hiRes);
-          }
-        }
-
-        // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+        let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
+        let sharedUrl = null;
         let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
-        if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
-          const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
-          const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
-          if (vis && typeof vis.score === 'number') {
-            grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
-            if (vis.comment) grade.comment = vis.comment;
+
+        try {
+          // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
+          aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
+          if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
+
+          // 2. Upload crisp JPEG of any generated AI image in 1 single HTTP request so ALL 10+ phones see EVERY player's real Nano Banana image!
+          sharedUrl = aiImg.url || null;
+          if (!sharedUrl && aiImg.dataUrl) {
+            const hiRes = await makeThumb(aiImg.dataUrl, 640, 0.78);
+            if (hiRes) {
+              sharedUrl = await RoomSync.uploadImage(hiRes);
+            }
           }
-        } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
-          const llm = await LiveAI.askJSON(
-            'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
-            `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
-          );
-          if (llm && typeof llm.score === 'number') {
-            grade.score = Math.max(5, Math.min(100, Math.round(llm.score)));
-            if (llm.comment) grade.comment = llm.comment;
+
+          // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+          if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
+            const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
+            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
+            if (vis && typeof vis.score === 'number') {
+              grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
+              if (vis.comment) grade.comment = vis.comment;
+            }
+          } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+            const llm = await LiveAI.askJSON(
+              'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
+              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
+            );
+            if (llm && typeof llm.score === 'number') {
+              grade.score = Math.max(5, Math.min(100, Math.round(llm.score)));
+              if (llm.comment) grade.comment = llm.comment;
+            }
           }
+        } catch (err) {
+          if (!aiWarning && err?.message) aiWarning = err.message;
         }
 
         results[i] = {
@@ -370,27 +420,42 @@ const Games = (() => {
         };
 
         completedCount++;
-        gradingStatus = `🍌 Generated ${completedCount}/${entries.length} AI images (${p.name} done!)...`;
-        broadcastPhoneState();
+        gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${p.name} done!)...`;
         const stEl = document.getElementById('clone-grading-status');
         if (stEl) stEl.textContent = gradingStatus;
+        // Broadcast progress every 3 players (keeps ntfy.sh POST count low for 10+ player games!)
+        if (completedCount % 3 === 0) scheduleBroadcastPhoneState(400);
       }
 
-      // Run 3 in parallel so 10 Nano Banana images complete ~3x faster!
+      // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
       const CONCURRENCY = 3;
-      for (let start = 0; start < entries.length; start += CONCURRENCY) {
-        const slice = [];
-        for (let j = start; j < Math.min(entries.length, start + CONCURRENCY); j++) {
-          slice.push(processOne(j));
+      let cursor = 0;
+      async function worker() {
+        while (cursor < gradingQueue.length) {
+          const i = cursor++;
+          const [pid, sub] = gradingQueue[i];
+          await processEntry(i, pid, sub);
         }
-        await Promise.all(slice);
+      }
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
+
+      // One final check in case a late submission arrived right as the last worker finished
+      if (RoomSync.getMode() === 'cloud') await RoomSync.pollNow(false);
+      while (cursor < gradingQueue.length) {
+        const i = cursor++;
+        const [pid, sub] = gradingQueue[i];
+        await processEntry(i, pid, sub);
       }
 
-      results.sort((a, b) => b.score - a.score);
-      gradedResults = results;
+      const finalResults = results.filter(Boolean);
+      gradingQueue = null;
+      gradingSeen = null;
+
+      finalResults.sort((a, b) => b.score - a.score);
+      gradedResults = finalResults;
       gradedResults._warning = aiWarning;
 
-      results.forEach((r, rank) => {
+      finalResults.forEach((r, rank) => {
         const bonus = rank === 0 ? 100 : rank === 1 ? 50 : 0;
         const pts = Math.round(r.score * 2) + bonus;
         r.pointsAwarded = pts;
@@ -400,7 +465,7 @@ const Games = (() => {
       // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
       const fullPayload = {
         roundId,
-        items: results.map((r, i) => ({
+        items: finalResults.map((r, i) => ({
           ...toCompactResult(r, i),
           p: r.prompt || '',
           c: r.comment || '',
@@ -412,8 +477,8 @@ const Games = (() => {
       phase = 'results';
       gradingStatus = '';
       SoundFX.fanfare();
-      if (results.length > 0) {
-        SoundFX.speak(`Grading complete! ${results[0].player.name} wins with a ${results[0].score} percent match!`);
+      if (finalResults.length > 0) {
+        SoundFX.speak(`Grading complete! ${finalResults[0].player.name} wins with a ${finalResults[0].score} percent match!`);
       }
       broadcastPhoneState();
       render();

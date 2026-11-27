@@ -55,7 +55,16 @@ const App = (() => {
   function addPlayer({ id, name, ageGroup = 'adult', avatar, remote = false }) {
     const clean = String(name || '').trim();
     if (!clean) return null;
-    const existing = (id && players.find(p => p.id === id)) || players.find(p => p.name.toLowerCase() === clean.toLowerCase());
+    // 1. Exact ID match always wins (same device re-announcing)
+    let existing = id ? players.find(p => p.id === id) : null;
+    // 2. If a remote phone claims an existing LOCAL (non-remote) default slot by name, bind it cleanly;
+    //    never overwrite another remote phone player's ID if two guests happen to share a name!
+    if (!existing) {
+      const sameName = players.find(p => p.name.toLowerCase() === clean.toLowerCase());
+      if (sameName && (!remote || !sameName.remote)) {
+        existing = sameName;
+      }
+    }
     if (existing) {
       if (id && remote) existing.id = id;
       existing.name = clean;
@@ -66,9 +75,16 @@ const App = (() => {
       updateTopbar();
       return existing;
     }
+    // Disambiguate display name if another remote player already has this exact name
+    let displayName = clean;
+    if (players.some(p => p.name.toLowerCase() === displayName.toLowerCase())) {
+      let n = 2;
+      while (players.some(p => p.name.toLowerCase() === `${clean} (${n})`.toLowerCase())) n++;
+      displayName = `${clean} (${n})`;
+    }
     const p = {
       id: id || ('p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5)),
-      name: clean,
+      name: displayName,
       ageGroup,
       avatar: avatar || GAME_DATA.avatars[players.length % GAME_DATA.avatars.length],
       score: 0,
@@ -991,7 +1007,12 @@ const App = (() => {
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
+    let lastSyncedDraft = '';
     let draftSyncTimer = null;
+    let pendingCloneSub = null; // { roundKey, text, autoCollected } — retried until Host confirms receipt!
+    let submitRetryTimer = null;
+    let deadlineTimer = null;
+    let deadlineRoundKey = '';
     let activeBotRound = '';
     let botDraft = '';
     let cachedTargetKey = '';
@@ -1004,23 +1025,81 @@ const App = (() => {
       if (draftSyncTimer) { clearTimeout(draftSyncTimer); draftSyncTimer = null; }
     }
 
+    function clearSubmitRetry() {
+      if (submitRetryTimer) { clearInterval(submitRetryTimer); submitRetryTimer = null; }
+      pendingCloneSub = null;
+    }
+
+    function clearDeadlineWatchdog() {
+      if (deadlineTimer) { clearTimeout(deadlineTimer); deadlineTimer = null; }
+      deadlineRoundKey = '';
+    }
+
     function scheduleCloneDraftSync(val) {
       clearDraftSync();
       if (!me) return;
+      const clean = String(val || '').trim();
+      if (!clean || clean === lastSyncedDraft) return;
+      // Jittered 7–9.5s debounce keeps ntfy.sh POST traffic low when 10+ phones type simultaneously!
+      const waitMs = 7000 + Math.floor(Math.random() * 2500);
       draftSyncTimer = setTimeout(() => {
         draftSyncTimer = null;
-        if (hostState.game === 'promptClone' && hostState.phase === 'writing') {
-          RoomSync.send({
-            type: 'ACTION',
-            playerId: me.id,
-            playerName: me.name,
-            avatar: me.avatar,
-            ageGroup: me.ageGroup,
-            action: 'CLONE_DRAFT',
-            value: String(val || '').trim(),
-          });
+        if (hostState.game === 'promptClone' && hostState.phase === 'writing' && !pendingCloneSub) {
+          const cur = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+          if (cur && cur !== lastSyncedDraft) {
+            lastSyncedDraft = cur;
+            RoomSync.send({
+              type: 'ACTION',
+              playerId: me.id,
+              playerName: me.name,
+              avatar: me.avatar,
+              ageGroup: me.ageGroup,
+              action: 'CLONE_DRAFT',
+              value: cur,
+            });
+          }
         }
-      }, 1800);
+      }, waitMs);
+    }
+
+    function sendCloneSubmissionNow(text, autoCollected = false) {
+      if (!me || !text) return;
+      RoomSync.send({
+        type: 'ACTION',
+        playerId: me.id,
+        playerName: me.name,
+        avatar: me.avatar,
+        ageGroup: me.ageGroup,
+        action: 'SUBMIT_CLONE_PROMPT',
+        value: text,
+        autoCollected: !!autoCollected,
+      });
+    }
+
+    // Guaranteed submission: sends immediately AND retries every 2.6s until Host confirms me.id in submittedIds!
+    function lockInClonePromptGuaranteed(roundKey, text, autoCollected = false) {
+      const clean = String(text || '').trim();
+      if (!clean || !me) return;
+      clearDraftSync();
+      clearDeadlineWatchdog();
+      submittedKey = roundKey;
+      mySubmittedClonePrompt = clean;
+      cloneDraft = '';
+      pendingCloneSub = { roundKey, text: clean, autoCollected: !!autoCollected, tries: 0 };
+      sendCloneSubmissionNow(clean, autoCollected);
+
+      if (submitRetryTimer) clearInterval(submitRetryTimer);
+      submitRetryTimer = setInterval(() => {
+        if (!pendingCloneSub || !me) { clearSubmitRetry(); return; }
+        const st = hostState;
+        const confirmed = st.game === 'promptClone' && Array.isArray(st.payload?.submittedIds) && st.payload.submittedIds.includes(me.id);
+        if (confirmed || st.game !== 'promptClone' || st.phase === 'results' || st.phase === 'lobby' || pendingCloneSub.tries >= 8) {
+          clearSubmitRetry();
+          return;
+        }
+        pendingCloneSub.tries++;
+        sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
+      }, 2600);
     }
 
     function getLocalArt(prompt) {
@@ -1285,8 +1364,11 @@ const App = (() => {
       // Reset draft cleanly only when a genuinely new round begins
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
         clearDraftSync();
+        clearSubmitRetry();
+        clearDeadlineWatchdog();
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
+        lastSyncedDraft = '';
         mySubmittedClonePrompt = '';
       }
       if (game === 'spotTheBot' && phase === 'submit' && activeBotRound !== botRoundKey) {
@@ -1294,36 +1376,47 @@ const App = (() => {
         botDraft = '';
       }
 
-      const cloneAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === cloneRoundKey;
+      const hostConfirmedClone = (payload.submittedIds || []).includes(me.id);
+      if (hostConfirmedClone && pendingCloneSub && pendingCloneSub.roundKey === cloneRoundKey) {
+        clearSubmitRetry();
+      }
+      const cloneAlready = hostConfirmedClone || submittedKey === cloneRoundKey;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
       const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
-      // If time just ran out (collecting phase), grab whatever is currently typed in the box BEFORE DOM is replaced!
-      if (game === 'promptClone' && phase === 'collecting' && !cloneAlready) {
+      // Local deadline watchdog: even if mobile Safari/Chrome dropped SSE while typing, auto-submit at deadline!
+      if (game === 'promptClone' && phase === 'writing' && !cloneAlready && payload.deadlineTs && deadlineRoundKey !== cloneRoundKey) {
+        clearDeadlineWatchdog();
+        const msLeft = Math.max(0, Number(payload.deadlineTs) - Date.now());
+        if (msLeft > 0 && msLeft < 600000) {
+          deadlineRoundKey = cloneRoundKey;
+          deadlineTimer = setTimeout(() => {
+            deadlineTimer = null;
+            if (hostState.game === 'promptClone' && hostState.phase === 'writing' && submittedKey !== cloneRoundKey) {
+              const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+              if (liveVal) {
+                SoundFX.ding();
+                lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
+                renderPhone();
+              }
+            }
+          }, msLeft + 200);
+        }
+      }
+
+      // If time just ran out (collecting OR even if phone woke up directly in grading!), grab whatever is typed BEFORE DOM is replaced!
+      if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading') && !cloneAlready) {
         const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
         if (liveVal) {
-          clearDraftSync();
-          submittedKey = cloneRoundKey;
-          mySubmittedClonePrompt = liveVal;
-          cloneDraft = '';
           SoundFX.ding();
-          RoomSync.send({
-            type: 'ACTION',
-            playerId: me.id,
-            playerName: me.name,
-            avatar: me.avatar,
-            ageGroup: me.ageGroup,
-            action: 'SUBMIT_CLONE_PROMPT',
-            value: liveVal,
-            autoCollected: true,
-          });
+          lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
         }
       }
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
-        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
+        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? (hostConfirmedClone ? 'confirmed' : 'sending') : 'edit'}`;
       } else if (game === 'promptClone' && phase === 'results') {
         viewKey = `promptClone:results:${cloneRoundKey}:${cloneResultItems.length}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -1348,6 +1441,9 @@ const App = (() => {
           <div class="card center stack">
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
+            <span class="tag ${hostConfirmedClone ? 'tag-kid' : 'tag-gold'}" id="phone-confirm-pill">
+              ${hostConfirmedClone ? '✅ Confirmed by Host!' : '⏳ Confirming with Host…'}
+            </span>
             ${myPreviewUrl ? `
               <p class="xs muted" style="margin:0;">Instant preview while everyone finishes (everyone's real AI images &amp; rankings appear here automatically!):</p>
               <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
@@ -1511,7 +1607,7 @@ const App = (() => {
         </div>`;
 
       const syncBtn = document.getElementById('p-sync-btn');
-      if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(); };
+      if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(true); };
 
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');
@@ -1530,20 +1626,8 @@ const App = (() => {
         document.getElementById('p-clone-send').onclick = () => {
           const val = pCloneIn.value.trim();
           if (!val) return;
-          clearDraftSync();
-          submittedKey = cloneRoundKey;
-          mySubmittedClonePrompt = val;
-          cloneDraft = '';
           SoundFX.ding();
-          RoomSync.send({
-            type: 'ACTION',
-            playerId: me.id,
-            playerName: me.name,
-            avatar: me.avatar,
-            ageGroup: me.ageGroup,
-            action: 'SUBMIT_CLONE_PROMPT',
-            value: val,
-          });
+          lockInClonePromptGuaranteed(cloneRoundKey, val, false);
           renderPhone();
         };
       }

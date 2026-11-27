@@ -203,8 +203,7 @@ async function main() {
     await g2.click('#p-clone-send');
     await g2.waitFor(`document.body.innerText.includes('Prompt Locked In!')`);
     await host.waitFor(`document.body.innerText.includes('Submissions (1/')`);
-    await sleep(400);
-
+    await g1.waitFor(`document.getElementById('phone-sub-count')?.textContent?.includes('1 locked in')`);
     const aliceStillThere = await g1.eval(`document.getElementById('p-clone-in')?.value`);
     assert(aliceStillThere === aliceDraft, 'Alice typed prompt was NOT wiped when Bob submitted!');
     const aliceCounter = await g1.eval(`document.getElementById('phone-sub-count')?.textContent`);

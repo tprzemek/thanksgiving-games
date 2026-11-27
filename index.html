@@ -2530,6 +2530,7 @@ const RoomSync = (() => {
   let wakeHandler = null;
   let listeners = [];
   let seenIds = new Set();
+  let lastServerTime = 0;
   const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
   const clientId = 'c_' + Math.random().toString(36).slice(2, 9);
 
@@ -2537,7 +2538,7 @@ const RoomSync = (() => {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 800) {
+    if (seenIds.size > 1500) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
@@ -2596,17 +2597,21 @@ const RoomSync = (() => {
     return 'tgfeast26_' + (code || 'DEMO').toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
-  async function pollNow() {
+  async function pollNow(fullHistory = false) {
     if (mode !== 'cloud' || !roomCode) return;
     try {
       const topic = topicName(roomCode);
-      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=5m`, { cache: 'no-store' });
+      const since = (!fullHistory && lastServerTime > 0) ? String(Math.max(0, lastServerTime - 8)) : '5m';
+      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=${since}`, { cache: 'no-store' });
       if (!res.ok) return;
       const text = await res.text();
       const lines = text.trim().split('\n').filter(Boolean);
       for (const line of lines) {
         try {
           const outer = JSON.parse(line);
+          if (outer && typeof outer.time === 'number' && outer.time > lastServerTime) {
+            lastServerTime = outer.time;
+          }
           if (outer && outer.message) {
             emit(JSON.parse(outer.message));
           }
@@ -2618,6 +2623,7 @@ const RoomSync = (() => {
   function connect(code) {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
+    lastServerTime = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -2640,6 +2646,9 @@ const RoomSync = (() => {
         es.onmessage = (ev) => {
           try {
             const outer = JSON.parse(ev.data);
+            if (outer && typeof outer.time === 'number' && outer.time > lastServerTime) {
+              lastServerTime = outer.time;
+            }
             if (outer && outer.message) {
               emit(JSON.parse(outer.message));
             }
@@ -2649,12 +2658,12 @@ const RoomSync = (() => {
       } catch (_) {}
 
       // Gentle safety poll + instant wake poll for mobile Safari/Chrome sleeping tabs
-      pollNow();
+      pollNow(true);
       pollTimer = setInterval(() => {
-        if (typeof document === 'undefined' || !document.hidden) pollNow();
-      }, 4000);
+        if (typeof document === 'undefined' || !document.hidden) pollNow(false);
+      }, 4500);
       if (typeof document !== 'undefined') {
-        wakeHandler = () => { if (!document.hidden) pollNow(); };
+        wakeHandler = () => { if (!document.hidden) pollNow(true); };
         document.addEventListener('visibilitychange', wakeHandler);
         window.addEventListener('focus', wakeHandler);
       }
@@ -2687,30 +2696,38 @@ const RoomSync = (() => {
       try { bc.postMessage(msg); } catch (_) {}
     }
 
+    let ok = true;
     if (mode === 'lan' && roomCode) {
       try {
-        await fetch(`/api/room/${encodeURIComponent(roomCode)}/send`, {
+        const res = await fetch(`/api/room/${encodeURIComponent(roomCode)}/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(msg),
         });
-      } catch (_) {}
+        ok = res.ok;
+      } catch (_) { ok = false; }
     } else if (mode === 'cloud' && roomCode) {
+      ok = false;
       const topic = topicName(roomCode);
       const bodyStr = JSON.stringify(msg);
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         try {
           const res = await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
             body: bodyStr,
           });
-          if (res.ok) break;
-          if (res.status === 429) await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
-          else break;
-        } catch (_) { break; }
+          if (res.ok) { ok = true; break; }
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise(r => setTimeout(r, 850 * (attempt + 1) + Math.floor(Math.random() * 450)));
+          } else {
+            break;
+          }
+        } catch (_) {
+          await new Promise(r => setTimeout(r, 700 * (attempt + 1)));
+        }
       }
     }
-    return msg;
+    return { ...msg, ok };
   }
 
   function dataUrlToBlob(dataUrl) {
@@ -2740,7 +2757,7 @@ const RoomSync = (() => {
         }
       } else if (mode === 'cloud') {
         const mediaTopic = topicName(roomCode) + '_media';
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 5; attempt++) {
           const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=art.jpg`, {
             method: 'POST',
             headers: { 'Content-Type': blob.type },
@@ -2751,8 +2768,11 @@ const RoomSync = (() => {
             if (j?.attachment?.url) return j.attachment.url;
             break;
           }
-          if (res.status === 429) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          else break;
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise(r => setTimeout(r, 950 * (attempt + 1) + Math.floor(Math.random() * 450)));
+          } else {
+            break;
+          }
         }
       }
     } catch (_) {}
@@ -2776,7 +2796,7 @@ const RoomSync = (() => {
         }
       } else if (mode === 'cloud') {
         const mediaTopic = topicName(roomCode) + '_media';
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 5; attempt++) {
           const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=${encodeURIComponent(filename)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2787,8 +2807,11 @@ const RoomSync = (() => {
             if (j?.attachment?.url) return j.attachment.url;
             break;
           }
-          if (res.status === 429) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          else break;
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise(r => setTimeout(r, 950 * (attempt + 1) + Math.floor(Math.random() * 450)));
+          } else {
+            break;
+          }
         }
       }
     } catch (_) {}
@@ -3033,30 +3056,38 @@ const LiveAI = (() => {
 
     let lastErr = '';
     for (const body of payloads) {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const errTxt = await res.text().catch(() => '');
-          lastErr = `HTTP ${res.status}: ${errTxt.slice(0, 140)}`;
-          // If 400 invalid imageConfig, try simpler payload; if 404/403/429 stop trying this model
-          if (res.status !== 400) break;
-          continue;
+      for (let retry = 0; retry < 2; retry++) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const errTxt = await res.text().catch(() => '');
+            lastErr = `HTTP ${res.status}: ${errTxt.slice(0, 140)}`;
+            if ((res.status === 429 || res.status === 503) && retry === 0) {
+              await new Promise(r => setTimeout(r, 1800 + Math.floor(Math.random() * 800)));
+              continue;
+            }
+            // If 400 invalid imageConfig, try simpler payload; otherwise stop trying this model
+            if (res.status !== 400) return { ok: false, error: lastErr };
+            break;
+          }
+          const j = await res.json();
+          const parts = j?.candidates?.[0]?.content?.parts || [];
+          const imgPart = parts.find(p => (p.inlineData && p.inlineData.data) || (p.inline_data && p.inline_data.data));
+          if (imgPart) {
+            const idata = imgPart.inlineData || imgPart.inline_data;
+            const mime = idata.mimeType || idata.mime_type || 'image/png';
+            return { ok: true, dataUrl: `data:${mime};base64,${idata.data}`, model: modelId };
+          }
+          lastErr = 'Model returned no image data';
+          break;
+        } catch (e) {
+          lastErr = e.message || 'Network error';
+          if (retry === 0) await new Promise(r => setTimeout(r, 1000));
         }
-        const j = await res.json();
-        const parts = j?.candidates?.[0]?.content?.parts || [];
-        const imgPart = parts.find(p => (p.inlineData && p.inlineData.data) || (p.inline_data && p.inline_data.data));
-        if (imgPart) {
-          const idata = imgPart.inlineData || imgPart.inline_data;
-          const mime = idata.mimeType || idata.mime_type || 'image/png';
-          return { ok: true, dataUrl: `data:${mime};base64,${idata.data}`, model: modelId };
-        }
-        lastErr = 'Model returned no image data';
-      } catch (e) {
-        lastErr = e.message || 'Network error';
       }
     }
     return { ok: false, error: lastErr };
@@ -3197,6 +3228,9 @@ const Games = (() => {
     let timeLeft = 180;
     let timer = null;
     let collectTimer = null;
+    let collectPolls = [];
+    let broadcastDebounce = null;
+    let deadlineTs = 0;
     let target = GAME_DATA.promptClone.challenges[idx];
     let roundId = 0;
     let customTargetImg = null; // Optional uploaded/custom image dataURL
@@ -3209,10 +3243,19 @@ const Games = (() => {
     let passIdx = 0;
     let gradedResults = [];
     let gradingStatus = '';
+    let gradingQueue = null;
+    let gradingSeen = null;
+
+    function clearCollectTimers() {
+      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      collectPolls.forEach(t => clearTimeout(t));
+      collectPolls = [];
+    }
 
     function cleanup() {
       if (timer) { clearInterval(timer); timer = null; }
-      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      clearCollectTimers();
+      if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
       SoundFX.stopSpeech();
     }
 
@@ -3272,6 +3315,7 @@ const Games = (() => {
     let resultsUrl = null; // Atomic hosted JSON containing ALL ranked participants + direct image URLs
 
     function broadcastPhoneState() {
+      if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
       // Embed results directly in HOST_STATE only if <= 3 players (keeps packet safely < 1.6KB for ntfy.sh!)
       const inlineResults = (phase === 'results' && gradedResults.length <= 3)
         ? gradedResults.map((r, i) => toCompactResult(r, i))
@@ -3286,6 +3330,7 @@ const Games = (() => {
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
         difficulty: customTargetImg ? 'Custom' : target.difficulty,
         timeLeft,
+        deadlineTs: phase === 'writing' ? deadlineTs : 0,
         submittedIds: Object.keys(submissions),
         gradingStatus,
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
@@ -3293,6 +3338,15 @@ const Games = (() => {
         resultsUrl: phase === 'results' ? resultsUrl : null,
         results: inlineResults,
       });
+    }
+
+    // Coalesce burst submissions from 10+ phones into 1 HOST_STATE broadcast so ntfy.sh never rate-limits!
+    function scheduleBroadcastPhoneState(delayMs = 500) {
+      if (broadcastDebounce) return;
+      broadcastDebounce = setTimeout(() => {
+        broadcastDebounce = null;
+        broadcastPhoneState();
+      }, delayMs);
     }
 
     async function broadcastResultsToPhones() {
@@ -3338,8 +3392,9 @@ const Games = (() => {
     }
 
     function onPhoneAction(msg) {
-      if (phase !== 'writing' && phase !== 'collecting') return;
+      if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading') return;
       if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
+        if (phase === 'grading') return;
         const clean = msg.value.trim();
         if (!clean) { delete drafts[msg.playerId]; return; }
         const p = ensureGuestPlayer(msg);
@@ -3356,18 +3411,24 @@ const Games = (() => {
         const clean = String(msg.value).trim();
         if (!clean) return;
         const p = ensureGuestPlayer(msg);
-        submissions[msg.playerId] = {
+        const subObj = {
           text: clean,
           playerName: p ? p.name : (msg.playerName || 'Guest'),
           avatar: p ? p.avatar : (msg.avatar || '🦃'),
           autoCollected: !!msg.autoCollected,
           ts: Date.now(),
         };
+        submissions[msg.playerId] = subObj;
         delete drafts[msg.playerId];
+
         if (phase === 'writing') {
           SoundFX.pop();
-          broadcastPhoneState();
+          scheduleBroadcastPhoneState(300);
           render();
+        } else if (phase === 'grading' && gradingQueue && gradingSeen && !gradingSeen.has(msg.playerId)) {
+          // Late arrival caught while AI is still painting — include them seamlessly!
+          gradingSeen.add(msg.playerId);
+          gradingQueue.push([msg.playerId, subObj]);
         }
       }
     }
@@ -3379,7 +3440,10 @@ const Games = (() => {
       drafts = {};
       gradedResults = [];
       resultsUrl = null;
+      gradingQueue = null;
+      gradingSeen = null;
       timeLeft = durationSec;
+      deadlineTs = Date.now() + durationSec * 1000;
       phase = 'writing';
       if (customTargetImg && customTargetThumb && !customTargetUrl) {
         customTargetUrl = await RoomSync.uploadImage(customTargetThumb);
@@ -3411,15 +3475,24 @@ const Games = (() => {
     // Auto-collect every participant's typed draft (even if they didn't press Lock In!) before grading
     function beginCollectAndGrade() {
       if (timer) { clearInterval(timer); timer = null; }
-      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      clearCollectTimers();
       phase = 'collecting';
       gradingStatus = '⏱️ Time\'s up! Auto-collecting everyone\'s typed prompts (even if they didn\'t tap Lock In)...';
       SoundFX.buzzer();
       broadcastPhoneState();
       render();
 
+      const isCloud = RoomSync.getMode() === 'cloud';
+      const sweepMs = isCloud ? 4600 : 1500;
+      if (isCloud) {
+        // Actively poll ntfy.sh during the sweep so no phone submission sits unread on SSE hiccups
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 1400));
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 2800));
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 4100));
+      }
+
       collectTimer = setTimeout(() => {
-        collectTimer = null;
+        clearCollectTimers();
         // Merge any auto-saved drafts that weren't explicitly locked in!
         for (const [pid, d] of Object.entries(drafts)) {
           if (!submissions[pid] && d && d.text) {
@@ -3435,7 +3508,7 @@ const Games = (() => {
           return;
         }
         gradeAll();
-      }, 2000);
+      }, sweepMs);
     }
 
     async function assetToThumbDataUrl(assetPath) {
@@ -3458,6 +3531,7 @@ const Games = (() => {
 
     async function gradeAll() {
       if (timer) { clearInterval(timer); timer = null; }
+      clearCollectTimers();
       phase = 'grading';
       gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
       broadcastPhoneState();
@@ -3465,8 +3539,9 @@ const Games = (() => {
 
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
-      const players = App.getPlayers();
-      const entries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
+      const initialEntries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
+      gradingQueue = [...initialEntries];
+      gradingSeen = new Set(initialEntries.map(([pid]) => pid));
 
       // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
       let targetVisionDataUrl = null;
@@ -3476,50 +3551,56 @@ const Games = (() => {
           : await assetToThumbDataUrl(target.asset);
       }
 
-      const results = new Array(entries.length);
+      const results = [];
       let completedCount = 0;
       let aiWarning = '';
 
-      async function processOne(i) {
-        const [pid, sub] = entries[i];
+      async function processEntry(i, pid, sub) {
+        const players = App.getPlayers();
         const p = players.find(x => x.id === pid) || {
           id: pid,
           name: sub.playerName || 'Player',
           avatar: sub.avatar || '🦃',
         };
         const gen = AIArt.renderDataURL(sub.text, 440, 300);
-
-        // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
-        const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
-        if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
-
-        // 2. Upload crisp JPEG of any generated AI image in 1 single HTTP request so ALL 10+ phones see EVERY player's real Nano Banana image!
-        let sharedUrl = aiImg.url || null;
-        if (!sharedUrl && aiImg.dataUrl) {
-          const hiRes = await makeThumb(aiImg.dataUrl, 640, 0.78);
-          if (hiRes) {
-            sharedUrl = await RoomSync.uploadImage(hiRes);
-          }
-        }
-
-        // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+        let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
+        let sharedUrl = null;
         let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
-        if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
-          const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
-          const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
-          if (vis && typeof vis.score === 'number') {
-            grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
-            if (vis.comment) grade.comment = vis.comment;
+
+        try {
+          // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
+          aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
+          if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
+
+          // 2. Upload crisp JPEG of any generated AI image in 1 single HTTP request so ALL 10+ phones see EVERY player's real Nano Banana image!
+          sharedUrl = aiImg.url || null;
+          if (!sharedUrl && aiImg.dataUrl) {
+            const hiRes = await makeThumb(aiImg.dataUrl, 640, 0.78);
+            if (hiRes) {
+              sharedUrl = await RoomSync.uploadImage(hiRes);
+            }
           }
-        } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
-          const llm = await LiveAI.askJSON(
-            'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
-            `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
-          );
-          if (llm && typeof llm.score === 'number') {
-            grade.score = Math.max(5, Math.min(100, Math.round(llm.score)));
-            if (llm.comment) grade.comment = llm.comment;
+
+          // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+          if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
+            const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
+            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
+            if (vis && typeof vis.score === 'number') {
+              grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
+              if (vis.comment) grade.comment = vis.comment;
+            }
+          } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+            const llm = await LiveAI.askJSON(
+              'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
+              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
+            );
+            if (llm && typeof llm.score === 'number') {
+              grade.score = Math.max(5, Math.min(100, Math.round(llm.score)));
+              if (llm.comment) grade.comment = llm.comment;
+            }
           }
+        } catch (err) {
+          if (!aiWarning && err?.message) aiWarning = err.message;
         }
 
         results[i] = {
@@ -3535,27 +3616,42 @@ const Games = (() => {
         };
 
         completedCount++;
-        gradingStatus = `🍌 Generated ${completedCount}/${entries.length} AI images (${p.name} done!)...`;
-        broadcastPhoneState();
+        gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${p.name} done!)...`;
         const stEl = document.getElementById('clone-grading-status');
         if (stEl) stEl.textContent = gradingStatus;
+        // Broadcast progress every 3 players (keeps ntfy.sh POST count low for 10+ player games!)
+        if (completedCount % 3 === 0) scheduleBroadcastPhoneState(400);
       }
 
-      // Run 3 in parallel so 10 Nano Banana images complete ~3x faster!
+      // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
       const CONCURRENCY = 3;
-      for (let start = 0; start < entries.length; start += CONCURRENCY) {
-        const slice = [];
-        for (let j = start; j < Math.min(entries.length, start + CONCURRENCY); j++) {
-          slice.push(processOne(j));
+      let cursor = 0;
+      async function worker() {
+        while (cursor < gradingQueue.length) {
+          const i = cursor++;
+          const [pid, sub] = gradingQueue[i];
+          await processEntry(i, pid, sub);
         }
-        await Promise.all(slice);
+      }
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
+
+      // One final check in case a late submission arrived right as the last worker finished
+      if (RoomSync.getMode() === 'cloud') await RoomSync.pollNow(false);
+      while (cursor < gradingQueue.length) {
+        const i = cursor++;
+        const [pid, sub] = gradingQueue[i];
+        await processEntry(i, pid, sub);
       }
 
-      results.sort((a, b) => b.score - a.score);
-      gradedResults = results;
+      const finalResults = results.filter(Boolean);
+      gradingQueue = null;
+      gradingSeen = null;
+
+      finalResults.sort((a, b) => b.score - a.score);
+      gradedResults = finalResults;
       gradedResults._warning = aiWarning;
 
-      results.forEach((r, rank) => {
+      finalResults.forEach((r, rank) => {
         const bonus = rank === 0 ? 100 : rank === 1 ? 50 : 0;
         const pts = Math.round(r.score * 2) + bonus;
         r.pointsAwarded = pts;
@@ -3565,7 +3661,7 @@ const Games = (() => {
       // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
       const fullPayload = {
         roundId,
-        items: results.map((r, i) => ({
+        items: finalResults.map((r, i) => ({
           ...toCompactResult(r, i),
           p: r.prompt || '',
           c: r.comment || '',
@@ -3577,8 +3673,8 @@ const Games = (() => {
       phase = 'results';
       gradingStatus = '';
       SoundFX.fanfare();
-      if (results.length > 0) {
-        SoundFX.speak(`Grading complete! ${results[0].player.name} wins with a ${results[0].score} percent match!`);
+      if (finalResults.length > 0) {
+        SoundFX.speak(`Grading complete! ${finalResults[0].player.name} wins with a ${finalResults[0].score} percent match!`);
       }
       broadcastPhoneState();
       render();
@@ -5366,7 +5462,16 @@ const App = (() => {
   function addPlayer({ id, name, ageGroup = 'adult', avatar, remote = false }) {
     const clean = String(name || '').trim();
     if (!clean) return null;
-    const existing = (id && players.find(p => p.id === id)) || players.find(p => p.name.toLowerCase() === clean.toLowerCase());
+    // 1. Exact ID match always wins (same device re-announcing)
+    let existing = id ? players.find(p => p.id === id) : null;
+    // 2. If a remote phone claims an existing LOCAL (non-remote) default slot by name, bind it cleanly;
+    //    never overwrite another remote phone player's ID if two guests happen to share a name!
+    if (!existing) {
+      const sameName = players.find(p => p.name.toLowerCase() === clean.toLowerCase());
+      if (sameName && (!remote || !sameName.remote)) {
+        existing = sameName;
+      }
+    }
     if (existing) {
       if (id && remote) existing.id = id;
       existing.name = clean;
@@ -5377,9 +5482,16 @@ const App = (() => {
       updateTopbar();
       return existing;
     }
+    // Disambiguate display name if another remote player already has this exact name
+    let displayName = clean;
+    if (players.some(p => p.name.toLowerCase() === displayName.toLowerCase())) {
+      let n = 2;
+      while (players.some(p => p.name.toLowerCase() === `${clean} (${n})`.toLowerCase())) n++;
+      displayName = `${clean} (${n})`;
+    }
     const p = {
       id: id || ('p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5)),
-      name: clean,
+      name: displayName,
       ageGroup,
       avatar: avatar || GAME_DATA.avatars[players.length % GAME_DATA.avatars.length],
       score: 0,
@@ -6302,7 +6414,12 @@ const App = (() => {
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
+    let lastSyncedDraft = '';
     let draftSyncTimer = null;
+    let pendingCloneSub = null; // { roundKey, text, autoCollected } — retried until Host confirms receipt!
+    let submitRetryTimer = null;
+    let deadlineTimer = null;
+    let deadlineRoundKey = '';
     let activeBotRound = '';
     let botDraft = '';
     let cachedTargetKey = '';
@@ -6315,23 +6432,81 @@ const App = (() => {
       if (draftSyncTimer) { clearTimeout(draftSyncTimer); draftSyncTimer = null; }
     }
 
+    function clearSubmitRetry() {
+      if (submitRetryTimer) { clearInterval(submitRetryTimer); submitRetryTimer = null; }
+      pendingCloneSub = null;
+    }
+
+    function clearDeadlineWatchdog() {
+      if (deadlineTimer) { clearTimeout(deadlineTimer); deadlineTimer = null; }
+      deadlineRoundKey = '';
+    }
+
     function scheduleCloneDraftSync(val) {
       clearDraftSync();
       if (!me) return;
+      const clean = String(val || '').trim();
+      if (!clean || clean === lastSyncedDraft) return;
+      // Jittered 7–9.5s debounce keeps ntfy.sh POST traffic low when 10+ phones type simultaneously!
+      const waitMs = 7000 + Math.floor(Math.random() * 2500);
       draftSyncTimer = setTimeout(() => {
         draftSyncTimer = null;
-        if (hostState.game === 'promptClone' && hostState.phase === 'writing') {
-          RoomSync.send({
-            type: 'ACTION',
-            playerId: me.id,
-            playerName: me.name,
-            avatar: me.avatar,
-            ageGroup: me.ageGroup,
-            action: 'CLONE_DRAFT',
-            value: String(val || '').trim(),
-          });
+        if (hostState.game === 'promptClone' && hostState.phase === 'writing' && !pendingCloneSub) {
+          const cur = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+          if (cur && cur !== lastSyncedDraft) {
+            lastSyncedDraft = cur;
+            RoomSync.send({
+              type: 'ACTION',
+              playerId: me.id,
+              playerName: me.name,
+              avatar: me.avatar,
+              ageGroup: me.ageGroup,
+              action: 'CLONE_DRAFT',
+              value: cur,
+            });
+          }
         }
-      }, 1800);
+      }, waitMs);
+    }
+
+    function sendCloneSubmissionNow(text, autoCollected = false) {
+      if (!me || !text) return;
+      RoomSync.send({
+        type: 'ACTION',
+        playerId: me.id,
+        playerName: me.name,
+        avatar: me.avatar,
+        ageGroup: me.ageGroup,
+        action: 'SUBMIT_CLONE_PROMPT',
+        value: text,
+        autoCollected: !!autoCollected,
+      });
+    }
+
+    // Guaranteed submission: sends immediately AND retries every 2.6s until Host confirms me.id in submittedIds!
+    function lockInClonePromptGuaranteed(roundKey, text, autoCollected = false) {
+      const clean = String(text || '').trim();
+      if (!clean || !me) return;
+      clearDraftSync();
+      clearDeadlineWatchdog();
+      submittedKey = roundKey;
+      mySubmittedClonePrompt = clean;
+      cloneDraft = '';
+      pendingCloneSub = { roundKey, text: clean, autoCollected: !!autoCollected, tries: 0 };
+      sendCloneSubmissionNow(clean, autoCollected);
+
+      if (submitRetryTimer) clearInterval(submitRetryTimer);
+      submitRetryTimer = setInterval(() => {
+        if (!pendingCloneSub || !me) { clearSubmitRetry(); return; }
+        const st = hostState;
+        const confirmed = st.game === 'promptClone' && Array.isArray(st.payload?.submittedIds) && st.payload.submittedIds.includes(me.id);
+        if (confirmed || st.game !== 'promptClone' || st.phase === 'results' || st.phase === 'lobby' || pendingCloneSub.tries >= 8) {
+          clearSubmitRetry();
+          return;
+        }
+        pendingCloneSub.tries++;
+        sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
+      }, 2600);
     }
 
     function getLocalArt(prompt) {
@@ -6596,8 +6771,11 @@ const App = (() => {
       // Reset draft cleanly only when a genuinely new round begins
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
         clearDraftSync();
+        clearSubmitRetry();
+        clearDeadlineWatchdog();
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
+        lastSyncedDraft = '';
         mySubmittedClonePrompt = '';
       }
       if (game === 'spotTheBot' && phase === 'submit' && activeBotRound !== botRoundKey) {
@@ -6605,36 +6783,47 @@ const App = (() => {
         botDraft = '';
       }
 
-      const cloneAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === cloneRoundKey;
+      const hostConfirmedClone = (payload.submittedIds || []).includes(me.id);
+      if (hostConfirmedClone && pendingCloneSub && pendingCloneSub.roundKey === cloneRoundKey) {
+        clearSubmitRetry();
+      }
+      const cloneAlready = hostConfirmedClone || submittedKey === cloneRoundKey;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
       const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
-      // If time just ran out (collecting phase), grab whatever is currently typed in the box BEFORE DOM is replaced!
-      if (game === 'promptClone' && phase === 'collecting' && !cloneAlready) {
+      // Local deadline watchdog: even if mobile Safari/Chrome dropped SSE while typing, auto-submit at deadline!
+      if (game === 'promptClone' && phase === 'writing' && !cloneAlready && payload.deadlineTs && deadlineRoundKey !== cloneRoundKey) {
+        clearDeadlineWatchdog();
+        const msLeft = Math.max(0, Number(payload.deadlineTs) - Date.now());
+        if (msLeft > 0 && msLeft < 600000) {
+          deadlineRoundKey = cloneRoundKey;
+          deadlineTimer = setTimeout(() => {
+            deadlineTimer = null;
+            if (hostState.game === 'promptClone' && hostState.phase === 'writing' && submittedKey !== cloneRoundKey) {
+              const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+              if (liveVal) {
+                SoundFX.ding();
+                lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
+                renderPhone();
+              }
+            }
+          }, msLeft + 200);
+        }
+      }
+
+      // If time just ran out (collecting OR even if phone woke up directly in grading!), grab whatever is typed BEFORE DOM is replaced!
+      if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading') && !cloneAlready) {
         const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
         if (liveVal) {
-          clearDraftSync();
-          submittedKey = cloneRoundKey;
-          mySubmittedClonePrompt = liveVal;
-          cloneDraft = '';
           SoundFX.ding();
-          RoomSync.send({
-            type: 'ACTION',
-            playerId: me.id,
-            playerName: me.name,
-            avatar: me.avatar,
-            ageGroup: me.ageGroup,
-            action: 'SUBMIT_CLONE_PROMPT',
-            value: liveVal,
-            autoCollected: true,
-          });
+          lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
         }
       }
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
-        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
+        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? (hostConfirmedClone ? 'confirmed' : 'sending') : 'edit'}`;
       } else if (game === 'promptClone' && phase === 'results') {
         viewKey = `promptClone:results:${cloneRoundKey}:${cloneResultItems.length}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -6659,6 +6848,9 @@ const App = (() => {
           <div class="card center stack">
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
+            <span class="tag ${hostConfirmedClone ? 'tag-kid' : 'tag-gold'}" id="phone-confirm-pill">
+              ${hostConfirmedClone ? '✅ Confirmed by Host!' : '⏳ Confirming with Host…'}
+            </span>
             ${myPreviewUrl ? `
               <p class="xs muted" style="margin:0;">Instant preview while everyone finishes (everyone's real AI images &amp; rankings appear here automatically!):</p>
               <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
@@ -6822,7 +7014,7 @@ const App = (() => {
         </div>`;
 
       const syncBtn = document.getElementById('p-sync-btn');
-      if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(); };
+      if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(true); };
 
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');
@@ -6841,20 +7033,8 @@ const App = (() => {
         document.getElementById('p-clone-send').onclick = () => {
           const val = pCloneIn.value.trim();
           if (!val) return;
-          clearDraftSync();
-          submittedKey = cloneRoundKey;
-          mySubmittedClonePrompt = val;
-          cloneDraft = '';
           SoundFX.ding();
-          RoomSync.send({
-            type: 'ACTION',
-            playerId: me.id,
-            playerName: me.name,
-            avatar: me.avatar,
-            ageGroup: me.ageGroup,
-            action: 'SUBMIT_CLONE_PROMPT',
-            value: val,
-          });
+          lockInClonePromptGuaranteed(cloneRoundKey, val, false);
           renderPhone();
         };
       }

@@ -19,6 +19,7 @@ const RoomSync = (() => {
   let wakeHandler = null;
   let listeners = [];
   let seenIds = new Set();
+  let lastServerTime = 0;
   const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
   const clientId = 'c_' + Math.random().toString(36).slice(2, 9);
 
@@ -26,7 +27,7 @@ const RoomSync = (() => {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 800) {
+    if (seenIds.size > 1500) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
@@ -85,17 +86,21 @@ const RoomSync = (() => {
     return 'tgfeast26_' + (code || 'DEMO').toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
-  async function pollNow() {
+  async function pollNow(fullHistory = false) {
     if (mode !== 'cloud' || !roomCode) return;
     try {
       const topic = topicName(roomCode);
-      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=5m`, { cache: 'no-store' });
+      const since = (!fullHistory && lastServerTime > 0) ? String(Math.max(0, lastServerTime - 8)) : '5m';
+      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=${since}`, { cache: 'no-store' });
       if (!res.ok) return;
       const text = await res.text();
       const lines = text.trim().split('\n').filter(Boolean);
       for (const line of lines) {
         try {
           const outer = JSON.parse(line);
+          if (outer && typeof outer.time === 'number' && outer.time > lastServerTime) {
+            lastServerTime = outer.time;
+          }
           if (outer && outer.message) {
             emit(JSON.parse(outer.message));
           }
@@ -107,6 +112,7 @@ const RoomSync = (() => {
   function connect(code) {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
+    lastServerTime = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -129,6 +135,9 @@ const RoomSync = (() => {
         es.onmessage = (ev) => {
           try {
             const outer = JSON.parse(ev.data);
+            if (outer && typeof outer.time === 'number' && outer.time > lastServerTime) {
+              lastServerTime = outer.time;
+            }
             if (outer && outer.message) {
               emit(JSON.parse(outer.message));
             }
@@ -138,12 +147,12 @@ const RoomSync = (() => {
       } catch (_) {}
 
       // Gentle safety poll + instant wake poll for mobile Safari/Chrome sleeping tabs
-      pollNow();
+      pollNow(true);
       pollTimer = setInterval(() => {
-        if (typeof document === 'undefined' || !document.hidden) pollNow();
-      }, 4000);
+        if (typeof document === 'undefined' || !document.hidden) pollNow(false);
+      }, 4500);
       if (typeof document !== 'undefined') {
-        wakeHandler = () => { if (!document.hidden) pollNow(); };
+        wakeHandler = () => { if (!document.hidden) pollNow(true); };
         document.addEventListener('visibilitychange', wakeHandler);
         window.addEventListener('focus', wakeHandler);
       }
@@ -176,30 +185,38 @@ const RoomSync = (() => {
       try { bc.postMessage(msg); } catch (_) {}
     }
 
+    let ok = true;
     if (mode === 'lan' && roomCode) {
       try {
-        await fetch(`/api/room/${encodeURIComponent(roomCode)}/send`, {
+        const res = await fetch(`/api/room/${encodeURIComponent(roomCode)}/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(msg),
         });
-      } catch (_) {}
+        ok = res.ok;
+      } catch (_) { ok = false; }
     } else if (mode === 'cloud' && roomCode) {
+      ok = false;
       const topic = topicName(roomCode);
       const bodyStr = JSON.stringify(msg);
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         try {
           const res = await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
             body: bodyStr,
           });
-          if (res.ok) break;
-          if (res.status === 429) await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
-          else break;
-        } catch (_) { break; }
+          if (res.ok) { ok = true; break; }
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise(r => setTimeout(r, 850 * (attempt + 1) + Math.floor(Math.random() * 450)));
+          } else {
+            break;
+          }
+        } catch (_) {
+          await new Promise(r => setTimeout(r, 700 * (attempt + 1)));
+        }
       }
     }
-    return msg;
+    return { ...msg, ok };
   }
 
   function dataUrlToBlob(dataUrl) {
@@ -229,7 +246,7 @@ const RoomSync = (() => {
         }
       } else if (mode === 'cloud') {
         const mediaTopic = topicName(roomCode) + '_media';
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 5; attempt++) {
           const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=art.jpg`, {
             method: 'POST',
             headers: { 'Content-Type': blob.type },
@@ -240,8 +257,11 @@ const RoomSync = (() => {
             if (j?.attachment?.url) return j.attachment.url;
             break;
           }
-          if (res.status === 429) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          else break;
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise(r => setTimeout(r, 950 * (attempt + 1) + Math.floor(Math.random() * 450)));
+          } else {
+            break;
+          }
         }
       }
     } catch (_) {}
@@ -265,7 +285,7 @@ const RoomSync = (() => {
         }
       } else if (mode === 'cloud') {
         const mediaTopic = topicName(roomCode) + '_media';
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 5; attempt++) {
           const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=${encodeURIComponent(filename)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -276,8 +296,11 @@ const RoomSync = (() => {
             if (j?.attachment?.url) return j.attachment.url;
             break;
           }
-          if (res.status === 429) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          else break;
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise(r => setTimeout(r, 950 * (attempt + 1) + Math.floor(Math.random() * 450)));
+          } else {
+            break;
+          }
         }
       }
     } catch (_) {}
@@ -522,30 +545,38 @@ const LiveAI = (() => {
 
     let lastErr = '';
     for (const body of payloads) {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const errTxt = await res.text().catch(() => '');
-          lastErr = `HTTP ${res.status}: ${errTxt.slice(0, 140)}`;
-          // If 400 invalid imageConfig, try simpler payload; if 404/403/429 stop trying this model
-          if (res.status !== 400) break;
-          continue;
+      for (let retry = 0; retry < 2; retry++) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const errTxt = await res.text().catch(() => '');
+            lastErr = `HTTP ${res.status}: ${errTxt.slice(0, 140)}`;
+            if ((res.status === 429 || res.status === 503) && retry === 0) {
+              await new Promise(r => setTimeout(r, 1800 + Math.floor(Math.random() * 800)));
+              continue;
+            }
+            // If 400 invalid imageConfig, try simpler payload; otherwise stop trying this model
+            if (res.status !== 400) return { ok: false, error: lastErr };
+            break;
+          }
+          const j = await res.json();
+          const parts = j?.candidates?.[0]?.content?.parts || [];
+          const imgPart = parts.find(p => (p.inlineData && p.inlineData.data) || (p.inline_data && p.inline_data.data));
+          if (imgPart) {
+            const idata = imgPart.inlineData || imgPart.inline_data;
+            const mime = idata.mimeType || idata.mime_type || 'image/png';
+            return { ok: true, dataUrl: `data:${mime};base64,${idata.data}`, model: modelId };
+          }
+          lastErr = 'Model returned no image data';
+          break;
+        } catch (e) {
+          lastErr = e.message || 'Network error';
+          if (retry === 0) await new Promise(r => setTimeout(r, 1000));
         }
-        const j = await res.json();
-        const parts = j?.candidates?.[0]?.content?.parts || [];
-        const imgPart = parts.find(p => (p.inlineData && p.inlineData.data) || (p.inline_data && p.inline_data.data));
-        if (imgPart) {
-          const idata = imgPart.inlineData || imgPart.inline_data;
-          const mime = idata.mimeType || idata.mime_type || 'image/png';
-          return { ok: true, dataUrl: `data:${mime};base64,${idata.data}`, model: modelId };
-        }
-        lastErr = 'Model returned no image data';
-      } catch (e) {
-        lastErr = e.message || 'Network error';
       }
     }
     return { ok: false, error: lastErr };

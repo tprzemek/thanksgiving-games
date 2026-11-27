@@ -253,11 +253,15 @@ const Games = (() => {
       return p;
     }
 
+    let awardedByRound = {}; // playerId -> pts already awarded this round (allows exact score delta if a late arrival shifts ranks!)
+    let activeTargetVisionDataUrl = null;
+    const lateGradingIds = new Set();
+
     function onPhoneAction(msg) {
-      if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading') return;
+      if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading' && phase !== 'results') return;
       if (msg.roundId && String(msg.roundId) !== String(roundId)) return;
       if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
-        if (phase === 'grading') return;
+        if (phase === 'grading' || phase === 'results') return;
         const clean = msg.value.trim();
         if (!clean) { delete drafts[msg.playerId]; return; }
         const p = ensureGuestPlayer(msg);
@@ -286,12 +290,19 @@ const Games = (() => {
 
         if (phase === 'writing') {
           SoundFX.pop();
-          scheduleBroadcastPhoneState(300);
+          scheduleBroadcastPhoneState(150);
           render();
         } else if (phase === 'grading' && gradingQueue && gradingSeen && !gradingSeen.has(msg.playerId)) {
           // Late arrival caught while AI is still painting — include them seamlessly!
           gradingSeen.add(msg.playerId);
           gradingQueue.push([msg.playerId, subObj]);
+        } else if (phase === 'results') {
+          // Ultra-late Wi-Fi reconnect after results appeared: grade them on the fly and update everyone's rankings!
+          const alreadyGraded = gradedResults.some(r => r.player?.id === msg.playerId);
+          if (!alreadyGraded && !lateGradingIds.has(msg.playerId)) {
+            lateGradingIds.add(msg.playerId);
+            gradeLateSubmission(msg.playerId, subObj);
+          }
         }
       }
     }
@@ -302,6 +313,10 @@ const Games = (() => {
       submissions = {};
       drafts = {};
       gradedResults = [];
+      awardedByRound = {};
+      lateGradingIds.clear();
+      activeTargetVisionDataUrl = null;
+      winnerAnalysis = null;
       resultsUrl = null;
       gradingQueue = null;
       gradingSeen = null;
@@ -366,18 +381,21 @@ const Games = (() => {
       render();
 
       const isCloud = RoomSync.getMode() === 'cloud';
-      const sweepMs = isCloud ? 3500 : 1500;
+      const sweepMs = isCloud ? 3800 : 1500;
       if (isCloud) {
-        // Re-pull all retained per-player sub/<roundId>/* & draft/<roundId>/* from MQTT broker so ZERO players are missed!
-        collectPolls.push(setTimeout(() => RoomSync.pollNow(), 2100));
+        // Re-pull all retained per-player sub/<roundId>/* & draft/<roundId>/* from MQTT broker with zero blackout!
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 1800));
       }
 
       collectTimer = setTimeout(() => {
         clearCollectTimers();
-        // Merge any auto-saved drafts that weren't explicitly locked in!
+        // Merge any auto-saved drafts that weren't explicitly locked in (or were edited newer than an earlier lock!)
         for (const [pid, d] of Object.entries(drafts)) {
-          if (!submissions[pid] && d && d.text) {
-            submissions[pid] = { ...d, autoCollected: true };
+          if (d && d.text) {
+            const existing = submissions[pid];
+            if (!existing || ((d.ts || 0) > (existing.ts || 0) && d.text.length >= existing.text.length)) {
+              submissions[pid] = { ...d, autoCollected: true };
+            }
           }
         }
         const total = Object.values(submissions).filter(s => s && s.text).length;
@@ -410,171 +428,114 @@ const Games = (() => {
       }
     }
 
-    async function gradeAll() {
-      if (timer) { clearInterval(timer); timer = null; }
-      clearCollectTimers();
-      phase = 'grading';
-      gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
-      broadcastPhoneState();
-      render();
+    async function gradeSingleSubmission(pid, sub, slotIdx, liveCfg, refPrompt, targetChecklist, targetRubric, targetVisionDataUrl, warnCb) {
+      const players = App.getPlayers();
+      const p = players.find(x => x.id === pid) || {
+        id: pid,
+        name: sub.playerName || 'Player',
+        avatar: sub.avatar || '🦃',
+      };
+      const gen = AIArt.renderDataURL(sub.text, 440, 300);
+      let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
+      let sharedUrl = null;
+      let hiResDataUrl = null;
+      let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, targetChecklist, targetRubric);
 
-      const liveCfg = LiveAI.loadSettings();
-      const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
-      const initialEntries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
-      gradingQueue = [...initialEntries];
-      gradingSeen = new Set(initialEntries.map(([pid]) => pid));
+      try {
+        // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
+        aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + slotIdx);
+        if (aiImg.error && warnCb) warnCb(aiImg.error);
 
-      // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
-      let targetVisionDataUrl = null;
-      if (liveCfg.provider === 'gemini' && liveCfg.apiKey) {
-        targetVisionDataUrl = customTargetImg
-          ? await makeThumb(customTargetImg, 420, 0.72)
-          : await assetToThumbDataUrl(target.asset);
-      }
-
-      const results = [];
-      let completedCount = 0;
-      let aiWarning = '';
-
-      const targetRubric = customTargetImg ? null : (target.rubric || null);
-      const targetChecklist = customTargetImg ? null : (target.checklist || null);
-
-      async function processEntry(i, pid, sub) {
-        const players = App.getPlayers();
-        const p = players.find(x => x.id === pid) || {
-          id: pid,
-          name: sub.playerName || 'Player',
-          avatar: sub.avatar || '🦃',
-        };
-        const gen = AIArt.renderDataURL(sub.text, 440, 300);
-        let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
-        let sharedUrl = null;
-        let hiResDataUrl = null;
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, targetChecklist, targetRubric);
-
-        try {
-          // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
-          aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
-          if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
-
-          // 2. Share crisp 560px JPEG immediately to all 10+ phones (LAN upload OR retained WSS MQTT!)
-          sharedUrl = aiImg.url || null;
-          if (!sharedUrl && aiImg.dataUrl) {
-            hiResDataUrl = await makeThumb(aiImg.dataUrl, 560, 0.76);
-            if (hiResDataUrl) {
-              sharedUrl = await RoomSync.uploadImage(hiResDataUrl);
-              if (!sharedUrl) {
-                RoomSync.sendImage(`res_${roundId}_${p.id}`, hiResDataUrl);
-              }
+        // 2. Share crisp 560px JPEG immediately to all 10+ phones (LAN upload OR retained WSS MQTT!)
+        sharedUrl = aiImg.url || null;
+        if (!sharedUrl && aiImg.dataUrl) {
+          hiResDataUrl = await makeThumb(aiImg.dataUrl, 560, 0.76);
+          if (hiResDataUrl) {
+            sharedUrl = await RoomSync.uploadImage(hiResDataUrl);
+            if (!sharedUrl) {
+              RoomSync.sendImage(`res_${roundId}_${p.id}`, hiResDataUrl);
             }
           }
+        }
 
-          // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
-          const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
-          grade.lexicalPct = lexPct;
-          grade.scoringMode = 'checklist';
-          grade.primaryScore = grade.semanticPct ?? grade.score;
-          if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
-            const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
-            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name, targetRubric);
-            if (vis && typeof vis.score === 'number') {
-              // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
-              grade.scoringMode = 'vision';
-              grade.primaryScore = vis.visionScore ?? vis.score;
-              grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
-              if (Array.isArray(vis.axes) && vis.axes.length) grade.axes = vis.axes;
-              if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
-              if (vis.comment) grade.comment = vis.comment;
-            }
-          } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
-            const rubricCtx = targetRubric
-              ? `\nGround-truth 5-axis visual key:\n- Subject (30): ${targetRubric.subject}\n- Setting (20): ${targetRubric.setting}\n- Props (20): ${targetRubric.props}\n- Style (15): ${targetRubric.style}\n- Palette (15): ${targetRubric.palette}`
-              : '';
-            const llm = await LiveAI.askJSON(
-              'You are a strict, fair, quantified visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
-              `Original target image prompt: "${refPrompt}"${rubricCtx}\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "notes": {"subject": "short reason", "setting": "short reason", "props": "short reason", "style": "short reason", "palette": "short reason"}, "comment": "2-3 concrete sentences: praise the strongest matches and explain the exact missing/different details that cost points."}`
-            );
-            if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
-              const rawScore = typeof llm.subject === 'number'
-                ? Math.max(5, Math.min(99, Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))))
-                : Math.max(5, Math.min(99, Math.round(llm.score)));
-              grade.scoringMode = 'llm';
-              grade.primaryScore = rawScore;
-              grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
-              if (typeof llm.subject === 'number') {
-                const subS = Math.max(0, Math.min(30, Math.round(llm.subject || 0)));
-                const setS = Math.max(0, Math.min(20, Math.round(llm.setting || 0)));
-                const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
-                const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
-                const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
-                const notes = llm.notes && typeof llm.notes === 'object' ? llm.notes : {};
-                grade.axes = [
-                  { k: 'Subject', s: subS, m: 30, n: String(notes.subject || '').slice(0, 68) },
-                  { k: 'Setting', s: setS, m: 20, n: String(notes.setting || '').slice(0, 68) },
-                  { k: 'Props', s: prpS, m: 20, n: String(notes.props || '').slice(0, 68) },
-                  { k: 'Style', s: styS, m: 15, n: String(notes.style || '').slice(0, 68) },
-                  { k: 'Palette', s: palS, m: 15, n: String(notes.palette || '').slice(0, 68) },
-                ];
-                grade.breakdown = [
-                  { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
-                  { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
-                  { label: `Props ${prpS}/20`, hit: prpS >= 15, partial: prpS >= 9 && prpS < 15 },
-                  { label: `Style ${styS}/15`, hit: styS >= 11, partial: styS >= 6 && styS < 11 },
-                  { label: `Palette ${palS}/15`, hit: palS >= 11, partial: palS >= 6 && palS < 11 },
-                ];
-              }
-              if (llm.comment) grade.comment = llm.comment;
-            }
+        // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
+        const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
+        grade.lexicalPct = lexPct;
+        grade.scoringMode = 'checklist';
+        grade.primaryScore = grade.semanticPct ?? grade.score;
+        if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
+          const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
+          const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name, targetRubric);
+          if (vis && Number.isFinite(vis.score)) {
+            grade.scoringMode = 'vision';
+            grade.primaryScore = Number.isFinite(vis.visionScore) ? vis.visionScore : vis.score;
+            grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
+            if (Array.isArray(vis.axes) && vis.axes.length) grade.axes = vis.axes;
+            if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
+            if (vis.comment) grade.comment = vis.comment;
           }
-        } catch (err) {
-          if (!aiWarning && err?.message) aiWarning = err.message;
+        } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+          const rubricCtx = targetRubric
+            ? `\nGround-truth 5-axis visual key:\n- Subject (30): ${targetRubric.subject}\n- Setting (20): ${targetRubric.setting}\n- Props (20): ${targetRubric.props}\n- Style (15): ${targetRubric.style}\n- Palette (15): ${targetRubric.palette}`
+            : '';
+          const llm = await LiveAI.askJSON(
+            'You are a strict, fair, quantified visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
+            `Original target image prompt: "${refPrompt}"${rubricCtx}\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "notes": {"subject": "short reason", "setting": "short reason", "props": "short reason", "style": "short reason", "palette": "short reason"}, "comment": "2-3 concrete sentences: praise the strongest matches and explain the exact missing/different details that cost points."}`
+          );
+          if (llm && (Number.isFinite(llm.subject) || Number.isFinite(llm.score))) {
+            const rawScore = Number.isFinite(llm.subject)
+              ? Math.max(5, Math.min(99, Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))))
+              : Math.max(5, Math.min(99, Math.round(llm.score)));
+            grade.scoringMode = 'llm';
+            grade.primaryScore = rawScore;
+            grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
+            if (typeof llm.subject === 'number') {
+              const subS = Math.max(0, Math.min(30, Math.round(llm.subject || 0)));
+              const setS = Math.max(0, Math.min(20, Math.round(llm.setting || 0)));
+              const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
+              const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
+              const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
+              const notes = llm.notes && typeof llm.notes === 'object' ? llm.notes : {};
+              grade.axes = [
+                { k: 'Subject', s: subS, m: 30, n: String(notes.subject || '').slice(0, 68) },
+                { k: 'Setting', s: setS, m: 20, n: String(notes.setting || '').slice(0, 68) },
+                { k: 'Props', s: prpS, m: 20, n: String(notes.props || '').slice(0, 68) },
+                { k: 'Style', s: styS, m: 15, n: String(notes.style || '').slice(0, 68) },
+                { k: 'Palette', s: palS, m: 15, n: String(notes.palette || '').slice(0, 68) },
+              ];
+              grade.breakdown = [
+                { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
+                { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
+                { label: `Props ${prpS}/20`, hit: prpS >= 15, partial: prpS >= 9 && prpS < 15 },
+                { label: `Style ${styS}/15`, hit: styS >= 11, partial: styS >= 6 && styS < 11 },
+                { label: `Palette ${palS}/15`, hit: palS >= 11, partial: palS >= 6 && palS < 11 },
+              ];
+            }
+            if (llm.comment) grade.comment = llm.comment;
+          }
         }
-
-        results[i] = {
-          player: p,
-          prompt: sub.text,
-          dataUrl: gen.dataUrl,
-          aiUrl: aiImg.url,
-          aiDataUrl: aiImg.dataUrl,
-          hiResDataUrl,
-          sharedUrl,
-          imgSource: aiImg.source,
-          autoCollected: !!sub.autoCollected,
-          ...grade,
-        };
-
-        completedCount++;
-        gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${p.name} done!)...`;
-        const stEl = document.getElementById('clone-grading-status');
-        if (stEl) stEl.textContent = gradingStatus;
-        scheduleBroadcastPhoneState(300);
+      } catch (err) {
+        if (warnCb && err?.message) warnCb(err.message);
       }
 
-      // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
-      const CONCURRENCY = 3;
-      let cursor = 0;
-      async function worker() {
-        while (cursor < gradingQueue.length) {
-          const i = cursor++;
-          const [pid, sub] = gradingQueue[i];
-          await processEntry(i, pid, sub);
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
+      return {
+        player: p,
+        prompt: sub.text,
+        dataUrl: gen.dataUrl,
+        aiUrl: aiImg.url,
+        aiDataUrl: aiImg.dataUrl,
+        hiResDataUrl,
+        sharedUrl,
+        imgSource: aiImg.source,
+        autoCollected: !!sub.autoCollected,
+        ...grade,
+      };
+    }
 
-      while (cursor < gradingQueue.length) {
-        const i = cursor++;
-        const [pid, sub] = gradingQueue[i];
-        await processEntry(i, pid, sub);
-      }
-
-      const finalResults = results.filter(Boolean);
-      gradingQueue = null;
-      gradingSeen = null;
-
+    async function finalizeAndPublishResults(finalResults, aiWarning, announce = false) {
       finalResults.sort((a, b) => (b.score - a.score) || ((b.lexicalPct || 0) - (a.lexicalPct || 0)) || (b.prompt.length - a.prompt.length));
       gradedResults = finalResults;
-      gradedResults._warning = aiWarning;
+      gradedResults._warning = aiWarning || '';
 
       finalResults.forEach((r, rank) => {
         const bonus = rank === 0 ? 100 : rank === 1 ? 50 : rank === 2 ? 25 : 0;
@@ -597,7 +558,13 @@ const Games = (() => {
         r.tieBreakNote = (tiedPrev || tiedNext)
           ? `Tie-breaker: Prompt Detail ${r.lexicalPct || 0}%`
           : '';
-        App.addScore(r.player.id, pts);
+        // Apply exact score delta so re-ranking after a late arrival never double-awards points!
+        const prevPts = awardedByRound[r.player.id] || 0;
+        const delta = pts - prevPts;
+        if (delta !== 0) {
+          awardedByRound[r.player.id] = pts;
+          App.addScore(r.player.id, delta);
+        }
       });
 
       // Build quantified "Why the Winner Got the Highest Score" analysis for Host & every Guest Phone!
@@ -670,7 +637,6 @@ const Games = (() => {
         winnerAnalysis = { headline, reasons };
       }
 
-      // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
       const fullPayload = {
         roundId,
         wa: winnerAnalysis,
@@ -681,17 +647,107 @@ const Games = (() => {
           bd: (r.breakdown || []).slice(0, 7),
         })),
       };
-      resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}.json`);
+      resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}_${finalResults.length}.json`);
 
       phase = 'results';
       gradingStatus = '';
-      SoundFX.fanfare();
-      if (finalResults.length > 0) {
-        SoundFX.speak(`Grading complete! ${finalResults[0].player.name} wins with a ${finalResults[0].score} percent match!`);
+      if (announce) {
+        SoundFX.fanfare();
+        if (finalResults.length > 0) {
+          SoundFX.speak(`Grading complete! ${finalResults[0].player.name} wins with a ${finalResults[0].score} percent match!`);
+        }
       }
       broadcastPhoneState();
       render();
       broadcastResultsToPhones();
+    }
+
+    async function gradeLateSubmission(pid, sub) {
+      const capturedRound = roundId;
+      try {
+        const liveCfg = LiveAI.loadSettings();
+        const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
+        const targetRubric = customTargetImg ? null : (target.rubric || null);
+        const targetChecklist = customTargetImg ? null : (target.checklist || null);
+        let aiWarn = gradedResults._warning || '';
+        const item = await gradeSingleSubmission(
+          pid, sub, gradedResults.length + 1, liveCfg, refPrompt, targetChecklist, targetRubric, activeTargetVisionDataUrl,
+          (msg) => { if (!aiWarn) aiWarn = msg; }
+        );
+        if (phase !== 'results' || roundId !== capturedRound) return;
+        if (gradedResults.some(r => r.player?.id === pid)) return;
+        await finalizeAndPublishResults([...gradedResults, item], aiWarn, false);
+      } finally {
+        lateGradingIds.delete(pid);
+      }
+    }
+
+    async function gradeAll() {
+      if (timer) { clearInterval(timer); timer = null; }
+      clearCollectTimers();
+      phase = 'grading';
+      gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
+      broadcastPhoneState();
+      render();
+
+      const liveCfg = LiveAI.loadSettings();
+      const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
+      const initialEntries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
+      gradingQueue = [...initialEntries];
+      gradingSeen = new Set(initialEntries.map(([pid]) => pid));
+
+      // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
+      let targetVisionDataUrl = null;
+      if (liveCfg.provider === 'gemini' && liveCfg.apiKey) {
+        targetVisionDataUrl = customTargetImg
+          ? await makeThumb(customTargetImg, 420, 0.72)
+          : await assetToThumbDataUrl(target.asset);
+      }
+      activeTargetVisionDataUrl = targetVisionDataUrl;
+
+      const results = [];
+      let completedCount = 0;
+      let aiWarning = '';
+
+      const targetRubric = customTargetImg ? null : (target.rubric || null);
+      const targetChecklist = customTargetImg ? null : (target.checklist || null);
+
+      async function processEntry(i, pid, sub) {
+        const item = await gradeSingleSubmission(
+          pid, sub, i, liveCfg, refPrompt, targetChecklist, targetRubric, targetVisionDataUrl,
+          (msg) => { if (!aiWarning) aiWarning = msg; }
+        );
+        results[i] = item;
+        completedCount++;
+        gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${item.player.name} done!)...`;
+        const stEl = document.getElementById('clone-grading-status');
+        if (stEl) stEl.textContent = gradingStatus;
+        scheduleBroadcastPhoneState(300);
+      }
+
+      // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
+      const CONCURRENCY = 3;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < gradingQueue.length) {
+          const i = cursor++;
+          const [pid, sub] = gradingQueue[i];
+          await processEntry(i, pid, sub);
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
+
+      while (cursor < gradingQueue.length) {
+        const i = cursor++;
+        const [pid, sub] = gradingQueue[i];
+        await processEntry(i, pid, sub);
+      }
+
+      const finalResults = results.filter(Boolean);
+      gradingQueue = null;
+      gradingSeen = null;
+
+      await finalizeAndPublishResults(finalResults, aiWarning, true);
     }
 
     function render() {

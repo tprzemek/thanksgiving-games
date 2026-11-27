@@ -3481,7 +3481,7 @@ const RoomSync = (() => {
     'wss://broker.hivemq.com:8884/mqtt',
   ];
 
-  let mode = 'local'; // 'lan' | 'cloud' | 'local'
+  let mode = 'local'; // 'lan' | 'local' | 'cloud'
   let roomCode = '';
   let lanBaseUrl = '';
   let es = null;
@@ -3489,9 +3489,12 @@ const RoomSync = (() => {
   let ws = null;
   let mqttReady = false;
   let brokerIdx = 0;
+  let lockedBrokerIdx = -1; // Once a room message arrives on a broker, NEVER split-brain to another broker!
   let consecutiveFails = 0;
   let pktCounter = 1;
   let pingTimer = null;
+  let pongTimer = null;
+  let lastRxTs = 0;
   let reconnectTimer = null;
   let wakeHandler = null;
   let shouldRun = false;
@@ -3582,9 +3585,9 @@ const RoomSync = (() => {
           outbox.unshift(item);
           break;
         }
-        // Gently pace large image packets (~35KB) so 10 concurrent images stream smoothly to all 10+ phones!
+        // Gently pace large image packets (~35KB) so 10 concurrent images stream smoothly without broker throttle!
         if (item.bodyStr.length > 8000) {
-          await new Promise(r => setTimeout(r, 120));
+          await new Promise(r => setTimeout(r, 180));
         }
       }
     } finally {
@@ -3592,14 +3595,20 @@ const RoomSync = (() => {
     }
   }
 
+  function clearHeartbeatTimers() {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+  }
+
   function openMqttSocket() {
     if (!shouldRun || mode !== 'cloud' || !roomCode) return;
     if (ws) { try { ws.close(); } catch (_) {} ws = null; }
-    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    clearHeartbeatTimers();
     mqttReady = false;
     notifyStatus();
 
-    const url = MQTT_BROKERS[brokerIdx % MQTT_BROKERS.length];
+    const activeIdx = lockedBrokerIdx >= 0 ? lockedBrokerIdx : (brokerIdx % MQTT_BROKERS.length);
+    const url = MQTT_BROKERS[activeIdx];
     let sock;
     try {
       sock = new WebSocket(url, 'mqtt');
@@ -3614,9 +3623,9 @@ const RoomSync = (() => {
     const connectGuard = setTimeout(() => {
       if (!mqttReady && ws === sock) {
         consecutiveFails++;
-        // Only rotate broker if primary fails 4+ times in a row (prevents 1 phone splitting onto a different broker!)
-        if (consecutiveFails >= 4) {
-          brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+        // Never split-brain once locked onto the room's broker! Before locking, bounce back to primary (#0) quickly.
+        if (lockedBrokerIdx < 0 && consecutiveFails >= 4) {
+          brokerIdx = brokerIdx === 0 ? 1 : 0;
           consecutiveFails = 0;
         }
         try { sock.close(); } catch (_) {}
@@ -3632,6 +3641,9 @@ const RoomSync = (() => {
 
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
+      lastRxTs = Date.now();
+      if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+
       const chunk = new Uint8Array(ev.data);
       const merged = new Uint8Array(buf.length + chunk.length);
       merged.set(buf);
@@ -3648,7 +3660,8 @@ const RoomSync = (() => {
           if (pos > 5) { buf = new Uint8Array(0); return; }
         }
         if (!complete || buf.length < pos + len) break;
-        const type = buf[0] >> 4;
+        const headerByte = buf[0];
+        const type = headerByte >> 4;
         const body = buf.subarray(pos, pos + len);
         buf = buf.subarray(pos + len);
 
@@ -3656,25 +3669,45 @@ const RoomSync = (() => {
           clearTimeout(connectGuard);
           consecutiveFails = 0;
           mqttReady = true;
+          lastRxTs = Date.now();
           notifyStatus();
           try {
             sock.send(mqttSubPkt(++pktCounter, roomPrefix() + '/#'));
           } catch (_) {}
-          if (pingTimer) clearInterval(pingTimer);
+          clearHeartbeatTimers();
+          // Real MQTT Keep-Alive watchdog: detects silent zombie mobile TCP sockets within 5–12s!
           pingTimer = setInterval(() => {
             if (ws === sock && sock.readyState === 1) {
-              try { sock.send(new Uint8Array([0xC0, 0x00])); } catch (_) {}
+              try {
+                sock.send(new Uint8Array([0xC0, 0x00])); // PINGREQ
+                if (pongTimer) clearTimeout(pongTimer);
+                pongTimer = setTimeout(() => {
+                  pongTimer = null;
+                  if (ws === sock) {
+                    try { sock.close(); } catch (_) {}
+                  }
+                }, 5000);
+              } catch (_) {
+                try { sock.close(); } catch (_) {}
+              }
             }
-          }, 24000);
+          }, 12000);
           flushOutbox();
+        } else if (type === 13) { // PINGRESP
+          if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
         } else if (type === 3) { // PUBLISH
           if (body.length < 2) continue;
           const tlen = (body[0] << 8) | body[1];
-          if (2 + tlen > body.length) continue;
-          const payloadStr = dec.decode(body.subarray(2 + tlen));
+          const qos = (headerByte >> 1) & 3;
+          const payloadStart = 2 + tlen + (qos > 0 ? 2 : 0);
+          if (payloadStart > body.length) continue;
+          const payloadStr = dec.decode(body.subarray(payloadStart));
           if (!payloadStr) continue;
           try {
             const parsed = JSON.parse(payloadStr);
+            if (parsed && parsed.type === 'HOST_STATE' && lockedBrokerIdx < 0) {
+              lockedBrokerIdx = activeIdx;
+            }
             emit(parsed);
           } catch (_) {}
         }
@@ -3683,17 +3716,18 @@ const RoomSync = (() => {
 
     sock.onclose = () => {
       clearTimeout(connectGuard);
+      clearHeartbeatTimers();
       if (ws !== sock) return;
       ws = null;
       mqttReady = false;
       notifyStatus();
-      if (shouldRun) scheduleReconnect(1200);
+      if (shouldRun) scheduleReconnect(900);
     };
 
     sock.onerror = () => {};
   }
 
-  function scheduleReconnect(delayMs = 1200) {
+  function scheduleReconnect(delayMs = 900) {
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -3703,19 +3737,23 @@ const RoomSync = (() => {
     }, delayMs);
   }
 
-  // Re-subscribe (or reconnect) to immediately pull all retained state, submissions, drafts, results & AI images!
-  async function pollNow() {
+  function reconnectNow() {
+    if (mode !== 'cloud' || !roomCode || !shouldRun) return;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    openMqttSocket();
+  }
+
+  // Re-pull all retained state, submissions, drafts, results & AI images with ZERO unsubscribe blackout!
+  async function pollNow(forceReconnect = false) {
     if (mode !== 'cloud' || !roomCode) return;
-    if (ws && ws.readyState === 1 && mqttReady) {
+    const stale = !lastRxTs || (Date.now() - lastRxTs > 15000);
+    if (!forceReconnect && !stale && ws && ws.readyState === 1 && mqttReady) {
       try {
-        const sub = roomPrefix() + '/#';
-        ws.send(mqttUnsubPkt(++pktCounter, sub));
-        setTimeout(() => {
-          if (ws && ws.readyState === 1 && mqttReady) {
-            try { ws.send(mqttSubPkt(++pktCounter, sub)); } catch (_) {}
-          }
-        }, 120);
-      } catch (_) {}
+        // MQTT 3.1.1 §3.8.4: re-sending SUBSCRIBE atomically re-delivers all retained messages without dropping live traffic!
+        ws.send(mqttSubPkt(++pktCounter, roomPrefix() + '/#'));
+      } catch (_) {
+        openMqttSocket();
+      }
     } else {
       openMqttSocket();
     }
@@ -3726,7 +3764,9 @@ const RoomSync = (() => {
     roomCode = (code || genCode(4)).toUpperCase();
     shouldRun = true;
     brokerIdx = 0;
+    lockedBrokerIdx = -1;
     consecutiveFails = 0;
+    lastRxTs = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -3748,8 +3788,8 @@ const RoomSync = (() => {
       if (typeof document !== 'undefined') {
         wakeHandler = () => {
           if (!document.hidden && shouldRun) {
-            if (!ws || ws.readyState !== 1 || !mqttReady) openMqttSocket();
-            else pollNow();
+            if (!ws || ws.readyState !== 1 || !mqttReady || (Date.now() - lastRxTs > 12000)) openMqttSocket();
+            else pollNow(false);
           }
         };
         document.addEventListener('visibilitychange', wakeHandler);
@@ -3766,7 +3806,7 @@ const RoomSync = (() => {
     mqttReady = false;
     outbox = [];
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    clearHeartbeatTimers();
     if (ws) { try { ws.close(); } catch (_) {} ws = null; }
     if (es) { try { es.close(); } catch (_) {} es = null; }
     if (bc) { try { bc.close(); } catch (_) {} bc = null; }
@@ -3779,21 +3819,21 @@ const RoomSync = (() => {
   }
 
   function mqttSubTopicFor(msg) {
-    if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true };
-    if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true };
-    if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true };
+    if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true, priority: true };
+    if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true, priority: true };
+    if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true, priority: false };
     // Retain every participant's prompt submission & draft on their own topic so Host NEVER misses anyone!
-    if (msg.type === 'ACTION' && msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.roundId) {
+    if (msg.type === 'ACTION' && msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId) {
       const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
-      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
-      return { subTopic: `sub/${rid}/${pid}`, retain: true };
+      const rid = msg.roundId ? String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '') : 'latest';
+      return { subTopic: `sub/${rid}/${pid}`, retain: true, priority: true };
     }
-    if (msg.type === 'ACTION' && msg.action === 'CLONE_DRAFT' && msg.playerId && msg.roundId) {
+    if (msg.type === 'ACTION' && msg.action === 'CLONE_DRAFT' && msg.playerId) {
       const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
-      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
-      return { subTopic: `draft/${rid}/${pid}`, retain: true };
+      const rid = msg.roundId ? String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '') : 'latest';
+      return { subTopic: `draft/${rid}/${pid}`, retain: true, priority: false };
     }
-    return { subTopic: 'events', retain: false };
+    return { subTopic: 'events', retain: false, priority: true };
   }
 
   function clearRetained(subTopic) {
@@ -3826,13 +3866,15 @@ const RoomSync = (() => {
         ok = res.ok;
       } catch (_) { ok = false; }
     } else if (mode === 'cloud' && roomCode) {
-      const { subTopic, retain } = mqttSubTopicFor(msg);
+      const { subTopic, retain, priority } = mqttSubTopicFor(msg);
       const bodyStr = JSON.stringify(msg);
-      // Replace any older queued HOST_STATE in outbox so only the newest state flushes!
-      if (subTopic === 'state') {
-        outbox = outbox.filter(x => x.subTopic !== 'state');
+      // Replace any older queued packet for the same retained state/sub/draft topic so only the newest flushes!
+      if (subTopic === 'state' || subTopic === 'results' || subTopic.startsWith('sub/') || subTopic.startsWith('draft/')) {
+        outbox = outbox.filter(x => x.subTopic !== subTopic);
       }
-      outbox.push({ subTopic, bodyStr, retain });
+      const entry = { subTopic, bodyStr, retain };
+      if (priority) outbox.unshift(entry);
+      else outbox.push(entry);
       flushOutbox();
       ok = mqttReady;
     }
@@ -3940,6 +3982,7 @@ const RoomSync = (() => {
     connect,
     disconnect,
     pollNow,
+    reconnectNow,
     send,
     clearRetained,
     uploadImage,
@@ -4578,11 +4621,15 @@ const Games = (() => {
       return p;
     }
 
+    let awardedByRound = {}; // playerId -> pts already awarded this round (allows exact score delta if a late arrival shifts ranks!)
+    let activeTargetVisionDataUrl = null;
+    const lateGradingIds = new Set();
+
     function onPhoneAction(msg) {
-      if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading') return;
+      if (phase !== 'writing' && phase !== 'collecting' && phase !== 'grading' && phase !== 'results') return;
       if (msg.roundId && String(msg.roundId) !== String(roundId)) return;
       if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
-        if (phase === 'grading') return;
+        if (phase === 'grading' || phase === 'results') return;
         const clean = msg.value.trim();
         if (!clean) { delete drafts[msg.playerId]; return; }
         const p = ensureGuestPlayer(msg);
@@ -4611,12 +4658,19 @@ const Games = (() => {
 
         if (phase === 'writing') {
           SoundFX.pop();
-          scheduleBroadcastPhoneState(300);
+          scheduleBroadcastPhoneState(150);
           render();
         } else if (phase === 'grading' && gradingQueue && gradingSeen && !gradingSeen.has(msg.playerId)) {
           // Late arrival caught while AI is still painting — include them seamlessly!
           gradingSeen.add(msg.playerId);
           gradingQueue.push([msg.playerId, subObj]);
+        } else if (phase === 'results') {
+          // Ultra-late Wi-Fi reconnect after results appeared: grade them on the fly and update everyone's rankings!
+          const alreadyGraded = gradedResults.some(r => r.player?.id === msg.playerId);
+          if (!alreadyGraded && !lateGradingIds.has(msg.playerId)) {
+            lateGradingIds.add(msg.playerId);
+            gradeLateSubmission(msg.playerId, subObj);
+          }
         }
       }
     }
@@ -4627,6 +4681,10 @@ const Games = (() => {
       submissions = {};
       drafts = {};
       gradedResults = [];
+      awardedByRound = {};
+      lateGradingIds.clear();
+      activeTargetVisionDataUrl = null;
+      winnerAnalysis = null;
       resultsUrl = null;
       gradingQueue = null;
       gradingSeen = null;
@@ -4691,18 +4749,21 @@ const Games = (() => {
       render();
 
       const isCloud = RoomSync.getMode() === 'cloud';
-      const sweepMs = isCloud ? 3500 : 1500;
+      const sweepMs = isCloud ? 3800 : 1500;
       if (isCloud) {
-        // Re-pull all retained per-player sub/<roundId>/* & draft/<roundId>/* from MQTT broker so ZERO players are missed!
-        collectPolls.push(setTimeout(() => RoomSync.pollNow(), 2100));
+        // Re-pull all retained per-player sub/<roundId>/* & draft/<roundId>/* from MQTT broker with zero blackout!
+        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 1800));
       }
 
       collectTimer = setTimeout(() => {
         clearCollectTimers();
-        // Merge any auto-saved drafts that weren't explicitly locked in!
+        // Merge any auto-saved drafts that weren't explicitly locked in (or were edited newer than an earlier lock!)
         for (const [pid, d] of Object.entries(drafts)) {
-          if (!submissions[pid] && d && d.text) {
-            submissions[pid] = { ...d, autoCollected: true };
+          if (d && d.text) {
+            const existing = submissions[pid];
+            if (!existing || ((d.ts || 0) > (existing.ts || 0) && d.text.length >= existing.text.length)) {
+              submissions[pid] = { ...d, autoCollected: true };
+            }
           }
         }
         const total = Object.values(submissions).filter(s => s && s.text).length;
@@ -4735,171 +4796,114 @@ const Games = (() => {
       }
     }
 
-    async function gradeAll() {
-      if (timer) { clearInterval(timer); timer = null; }
-      clearCollectTimers();
-      phase = 'grading';
-      gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
-      broadcastPhoneState();
-      render();
+    async function gradeSingleSubmission(pid, sub, slotIdx, liveCfg, refPrompt, targetChecklist, targetRubric, targetVisionDataUrl, warnCb) {
+      const players = App.getPlayers();
+      const p = players.find(x => x.id === pid) || {
+        id: pid,
+        name: sub.playerName || 'Player',
+        avatar: sub.avatar || '🦃',
+      };
+      const gen = AIArt.renderDataURL(sub.text, 440, 300);
+      let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
+      let sharedUrl = null;
+      let hiResDataUrl = null;
+      let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, targetChecklist, targetRubric);
 
-      const liveCfg = LiveAI.loadSettings();
-      const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
-      const initialEntries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
-      gradingQueue = [...initialEntries];
-      gradingSeen = new Set(initialEntries.map(([pid]) => pid));
+      try {
+        // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
+        aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + slotIdx);
+        if (aiImg.error && warnCb) warnCb(aiImg.error);
 
-      // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
-      let targetVisionDataUrl = null;
-      if (liveCfg.provider === 'gemini' && liveCfg.apiKey) {
-        targetVisionDataUrl = customTargetImg
-          ? await makeThumb(customTargetImg, 420, 0.72)
-          : await assetToThumbDataUrl(target.asset);
-      }
-
-      const results = [];
-      let completedCount = 0;
-      let aiWarning = '';
-
-      const targetRubric = customTargetImg ? null : (target.rubric || null);
-      const targetChecklist = customTargetImg ? null : (target.checklist || null);
-
-      async function processEntry(i, pid, sub) {
-        const players = App.getPlayers();
-        const p = players.find(x => x.id === pid) || {
-          id: pid,
-          name: sub.playerName || 'Player',
-          avatar: sub.avatar || '🦃',
-        };
-        const gen = AIArt.renderDataURL(sub.text, 440, 300);
-        let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
-        let sharedUrl = null;
-        let hiResDataUrl = null;
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, targetChecklist, targetRubric);
-
-        try {
-          // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
-          aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
-          if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
-
-          // 2. Share crisp 560px JPEG immediately to all 10+ phones (LAN upload OR retained WSS MQTT!)
-          sharedUrl = aiImg.url || null;
-          if (!sharedUrl && aiImg.dataUrl) {
-            hiResDataUrl = await makeThumb(aiImg.dataUrl, 560, 0.76);
-            if (hiResDataUrl) {
-              sharedUrl = await RoomSync.uploadImage(hiResDataUrl);
-              if (!sharedUrl) {
-                RoomSync.sendImage(`res_${roundId}_${p.id}`, hiResDataUrl);
-              }
+        // 2. Share crisp 560px JPEG immediately to all 10+ phones (LAN upload OR retained WSS MQTT!)
+        sharedUrl = aiImg.url || null;
+        if (!sharedUrl && aiImg.dataUrl) {
+          hiResDataUrl = await makeThumb(aiImg.dataUrl, 560, 0.76);
+          if (hiResDataUrl) {
+            sharedUrl = await RoomSync.uploadImage(hiResDataUrl);
+            if (!sharedUrl) {
+              RoomSync.sendImage(`res_${roundId}_${p.id}`, hiResDataUrl);
             }
           }
+        }
 
-          // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
-          const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
-          grade.lexicalPct = lexPct;
-          grade.scoringMode = 'checklist';
-          grade.primaryScore = grade.semanticPct ?? grade.score;
-          if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
-            const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
-            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name, targetRubric);
-            if (vis && typeof vis.score === 'number') {
-              // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
-              grade.scoringMode = 'vision';
-              grade.primaryScore = vis.visionScore ?? vis.score;
-              grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
-              if (Array.isArray(vis.axes) && vis.axes.length) grade.axes = vis.axes;
-              if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
-              if (vis.comment) grade.comment = vis.comment;
-            }
-          } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
-            const rubricCtx = targetRubric
-              ? `\nGround-truth 5-axis visual key:\n- Subject (30): ${targetRubric.subject}\n- Setting (20): ${targetRubric.setting}\n- Props (20): ${targetRubric.props}\n- Style (15): ${targetRubric.style}\n- Palette (15): ${targetRubric.palette}`
-              : '';
-            const llm = await LiveAI.askJSON(
-              'You are a strict, fair, quantified visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
-              `Original target image prompt: "${refPrompt}"${rubricCtx}\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "notes": {"subject": "short reason", "setting": "short reason", "props": "short reason", "style": "short reason", "palette": "short reason"}, "comment": "2-3 concrete sentences: praise the strongest matches and explain the exact missing/different details that cost points."}`
-            );
-            if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
-              const rawScore = typeof llm.subject === 'number'
-                ? Math.max(5, Math.min(99, Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))))
-                : Math.max(5, Math.min(99, Math.round(llm.score)));
-              grade.scoringMode = 'llm';
-              grade.primaryScore = rawScore;
-              grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
-              if (typeof llm.subject === 'number') {
-                const subS = Math.max(0, Math.min(30, Math.round(llm.subject || 0)));
-                const setS = Math.max(0, Math.min(20, Math.round(llm.setting || 0)));
-                const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
-                const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
-                const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
-                const notes = llm.notes && typeof llm.notes === 'object' ? llm.notes : {};
-                grade.axes = [
-                  { k: 'Subject', s: subS, m: 30, n: String(notes.subject || '').slice(0, 68) },
-                  { k: 'Setting', s: setS, m: 20, n: String(notes.setting || '').slice(0, 68) },
-                  { k: 'Props', s: prpS, m: 20, n: String(notes.props || '').slice(0, 68) },
-                  { k: 'Style', s: styS, m: 15, n: String(notes.style || '').slice(0, 68) },
-                  { k: 'Palette', s: palS, m: 15, n: String(notes.palette || '').slice(0, 68) },
-                ];
-                grade.breakdown = [
-                  { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
-                  { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
-                  { label: `Props ${prpS}/20`, hit: prpS >= 15, partial: prpS >= 9 && prpS < 15 },
-                  { label: `Style ${styS}/15`, hit: styS >= 11, partial: styS >= 6 && styS < 11 },
-                  { label: `Palette ${palS}/15`, hit: palS >= 11, partial: palS >= 6 && palS < 11 },
-                ];
-              }
-              if (llm.comment) grade.comment = llm.comment;
-            }
+        // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
+        const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
+        grade.lexicalPct = lexPct;
+        grade.scoringMode = 'checklist';
+        grade.primaryScore = grade.semanticPct ?? grade.score;
+        if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
+          const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
+          const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name, targetRubric);
+          if (vis && Number.isFinite(vis.score)) {
+            grade.scoringMode = 'vision';
+            grade.primaryScore = Number.isFinite(vis.visionScore) ? vis.visionScore : vis.score;
+            grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
+            if (Array.isArray(vis.axes) && vis.axes.length) grade.axes = vis.axes;
+            if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
+            if (vis.comment) grade.comment = vis.comment;
           }
-        } catch (err) {
-          if (!aiWarning && err?.message) aiWarning = err.message;
+        } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+          const rubricCtx = targetRubric
+            ? `\nGround-truth 5-axis visual key:\n- Subject (30): ${targetRubric.subject}\n- Setting (20): ${targetRubric.setting}\n- Props (20): ${targetRubric.props}\n- Style (15): ${targetRubric.style}\n- Palette (15): ${targetRubric.palette}`
+            : '';
+          const llm = await LiveAI.askJSON(
+            'You are a strict, fair, quantified visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
+            `Original target image prompt: "${refPrompt}"${rubricCtx}\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "notes": {"subject": "short reason", "setting": "short reason", "props": "short reason", "style": "short reason", "palette": "short reason"}, "comment": "2-3 concrete sentences: praise the strongest matches and explain the exact missing/different details that cost points."}`
+          );
+          if (llm && (Number.isFinite(llm.subject) || Number.isFinite(llm.score))) {
+            const rawScore = Number.isFinite(llm.subject)
+              ? Math.max(5, Math.min(99, Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))))
+              : Math.max(5, Math.min(99, Math.round(llm.score)));
+            grade.scoringMode = 'llm';
+            grade.primaryScore = rawScore;
+            grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
+            if (typeof llm.subject === 'number') {
+              const subS = Math.max(0, Math.min(30, Math.round(llm.subject || 0)));
+              const setS = Math.max(0, Math.min(20, Math.round(llm.setting || 0)));
+              const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
+              const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
+              const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
+              const notes = llm.notes && typeof llm.notes === 'object' ? llm.notes : {};
+              grade.axes = [
+                { k: 'Subject', s: subS, m: 30, n: String(notes.subject || '').slice(0, 68) },
+                { k: 'Setting', s: setS, m: 20, n: String(notes.setting || '').slice(0, 68) },
+                { k: 'Props', s: prpS, m: 20, n: String(notes.props || '').slice(0, 68) },
+                { k: 'Style', s: styS, m: 15, n: String(notes.style || '').slice(0, 68) },
+                { k: 'Palette', s: palS, m: 15, n: String(notes.palette || '').slice(0, 68) },
+              ];
+              grade.breakdown = [
+                { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
+                { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
+                { label: `Props ${prpS}/20`, hit: prpS >= 15, partial: prpS >= 9 && prpS < 15 },
+                { label: `Style ${styS}/15`, hit: styS >= 11, partial: styS >= 6 && styS < 11 },
+                { label: `Palette ${palS}/15`, hit: palS >= 11, partial: palS >= 6 && palS < 11 },
+              ];
+            }
+            if (llm.comment) grade.comment = llm.comment;
+          }
         }
-
-        results[i] = {
-          player: p,
-          prompt: sub.text,
-          dataUrl: gen.dataUrl,
-          aiUrl: aiImg.url,
-          aiDataUrl: aiImg.dataUrl,
-          hiResDataUrl,
-          sharedUrl,
-          imgSource: aiImg.source,
-          autoCollected: !!sub.autoCollected,
-          ...grade,
-        };
-
-        completedCount++;
-        gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${p.name} done!)...`;
-        const stEl = document.getElementById('clone-grading-status');
-        if (stEl) stEl.textContent = gradingStatus;
-        scheduleBroadcastPhoneState(300);
+      } catch (err) {
+        if (warnCb && err?.message) warnCb(err.message);
       }
 
-      // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
-      const CONCURRENCY = 3;
-      let cursor = 0;
-      async function worker() {
-        while (cursor < gradingQueue.length) {
-          const i = cursor++;
-          const [pid, sub] = gradingQueue[i];
-          await processEntry(i, pid, sub);
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
+      return {
+        player: p,
+        prompt: sub.text,
+        dataUrl: gen.dataUrl,
+        aiUrl: aiImg.url,
+        aiDataUrl: aiImg.dataUrl,
+        hiResDataUrl,
+        sharedUrl,
+        imgSource: aiImg.source,
+        autoCollected: !!sub.autoCollected,
+        ...grade,
+      };
+    }
 
-      while (cursor < gradingQueue.length) {
-        const i = cursor++;
-        const [pid, sub] = gradingQueue[i];
-        await processEntry(i, pid, sub);
-      }
-
-      const finalResults = results.filter(Boolean);
-      gradingQueue = null;
-      gradingSeen = null;
-
+    async function finalizeAndPublishResults(finalResults, aiWarning, announce = false) {
       finalResults.sort((a, b) => (b.score - a.score) || ((b.lexicalPct || 0) - (a.lexicalPct || 0)) || (b.prompt.length - a.prompt.length));
       gradedResults = finalResults;
-      gradedResults._warning = aiWarning;
+      gradedResults._warning = aiWarning || '';
 
       finalResults.forEach((r, rank) => {
         const bonus = rank === 0 ? 100 : rank === 1 ? 50 : rank === 2 ? 25 : 0;
@@ -4922,7 +4926,13 @@ const Games = (() => {
         r.tieBreakNote = (tiedPrev || tiedNext)
           ? `Tie-breaker: Prompt Detail ${r.lexicalPct || 0}%`
           : '';
-        App.addScore(r.player.id, pts);
+        // Apply exact score delta so re-ranking after a late arrival never double-awards points!
+        const prevPts = awardedByRound[r.player.id] || 0;
+        const delta = pts - prevPts;
+        if (delta !== 0) {
+          awardedByRound[r.player.id] = pts;
+          App.addScore(r.player.id, delta);
+        }
       });
 
       // Build quantified "Why the Winner Got the Highest Score" analysis for Host & every Guest Phone!
@@ -4995,7 +5005,6 @@ const Games = (() => {
         winnerAnalysis = { headline, reasons };
       }
 
-      // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
       const fullPayload = {
         roundId,
         wa: winnerAnalysis,
@@ -5006,17 +5015,107 @@ const Games = (() => {
           bd: (r.breakdown || []).slice(0, 7),
         })),
       };
-      resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}.json`);
+      resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}_${finalResults.length}.json`);
 
       phase = 'results';
       gradingStatus = '';
-      SoundFX.fanfare();
-      if (finalResults.length > 0) {
-        SoundFX.speak(`Grading complete! ${finalResults[0].player.name} wins with a ${finalResults[0].score} percent match!`);
+      if (announce) {
+        SoundFX.fanfare();
+        if (finalResults.length > 0) {
+          SoundFX.speak(`Grading complete! ${finalResults[0].player.name} wins with a ${finalResults[0].score} percent match!`);
+        }
       }
       broadcastPhoneState();
       render();
       broadcastResultsToPhones();
+    }
+
+    async function gradeLateSubmission(pid, sub) {
+      const capturedRound = roundId;
+      try {
+        const liveCfg = LiveAI.loadSettings();
+        const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
+        const targetRubric = customTargetImg ? null : (target.rubric || null);
+        const targetChecklist = customTargetImg ? null : (target.checklist || null);
+        let aiWarn = gradedResults._warning || '';
+        const item = await gradeSingleSubmission(
+          pid, sub, gradedResults.length + 1, liveCfg, refPrompt, targetChecklist, targetRubric, activeTargetVisionDataUrl,
+          (msg) => { if (!aiWarn) aiWarn = msg; }
+        );
+        if (phase !== 'results' || roundId !== capturedRound) return;
+        if (gradedResults.some(r => r.player?.id === pid)) return;
+        await finalizeAndPublishResults([...gradedResults, item], aiWarn, false);
+      } finally {
+        lateGradingIds.delete(pid);
+      }
+    }
+
+    async function gradeAll() {
+      if (timer) { clearInterval(timer); timer = null; }
+      clearCollectTimers();
+      phase = 'grading';
+      gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
+      broadcastPhoneState();
+      render();
+
+      const liveCfg = LiveAI.loadSettings();
+      const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
+      const initialEntries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
+      gradingQueue = [...initialEntries];
+      gradingSeen = new Set(initialEntries.map(([pid]) => pid));
+
+      // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
+      let targetVisionDataUrl = null;
+      if (liveCfg.provider === 'gemini' && liveCfg.apiKey) {
+        targetVisionDataUrl = customTargetImg
+          ? await makeThumb(customTargetImg, 420, 0.72)
+          : await assetToThumbDataUrl(target.asset);
+      }
+      activeTargetVisionDataUrl = targetVisionDataUrl;
+
+      const results = [];
+      let completedCount = 0;
+      let aiWarning = '';
+
+      const targetRubric = customTargetImg ? null : (target.rubric || null);
+      const targetChecklist = customTargetImg ? null : (target.checklist || null);
+
+      async function processEntry(i, pid, sub) {
+        const item = await gradeSingleSubmission(
+          pid, sub, i, liveCfg, refPrompt, targetChecklist, targetRubric, targetVisionDataUrl,
+          (msg) => { if (!aiWarning) aiWarning = msg; }
+        );
+        results[i] = item;
+        completedCount++;
+        gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${item.player.name} done!)...`;
+        const stEl = document.getElementById('clone-grading-status');
+        if (stEl) stEl.textContent = gradingStatus;
+        scheduleBroadcastPhoneState(300);
+      }
+
+      // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
+      const CONCURRENCY = 3;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < gradingQueue.length) {
+          const i = cursor++;
+          const [pid, sub] = gradingQueue[i];
+          await processEntry(i, pid, sub);
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
+
+      while (cursor < gradingQueue.length) {
+        const i = cursor++;
+        const [pid, sub] = gradingQueue[i];
+        await processEntry(i, pid, sub);
+      }
+
+      const finalResults = results.filter(Boolean);
+      gradingQueue = null;
+      gradingSeen = null;
+
+      await finalizeAndPublishResults(finalResults, aiWarning, true);
     }
 
     function render() {
@@ -7832,12 +7931,14 @@ const App = (() => {
     let hostState = { game: null, phase: 'hub', payload: {}, leaderboard: [] };
     let submittedKey = '';
     let mySubmittedClonePrompt = '';
+    let editingLockedClone = false;
+    let shortLockWarn = false;
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
     let lastSyncedDraft = '';
     let draftSyncTimer = null;
-    let pendingCloneSub = null; // { roundKey, text, autoCollected } — retried until Host confirms receipt!
+    let pendingCloneSub = null; // { roundKey, text, autoCollected, tries, isUpdate } — retried until Host confirms!
     let submitRetryTimer = null;
     let deadlineTimer = null;
     let deadlineRoundKey = '';
@@ -7854,6 +7955,25 @@ const App = (() => {
     const receivedImages = {}; // imgKey -> dataUrl
     const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
     const localGenCache = {}; // prompt -> dataUrl
+
+    function saveDraftToSession(roundKey, draftText, submittedText) {
+      if (!roundKey) return;
+      try {
+        sessionStorage.setItem(`tg26_cd_${roomCode}_${roundKey}`, JSON.stringify({
+          d: draftText || '',
+          s: submittedText || '',
+        }));
+      } catch (_) {}
+    }
+
+    function loadDraftFromSession(roundKey) {
+      if (!roundKey) return { d: '', s: '' };
+      try {
+        const raw = sessionStorage.getItem(`tg26_cd_${roomCode}_${roundKey}`);
+        if (raw) return JSON.parse(raw);
+      } catch (_) {}
+      return { d: '', s: '' };
+    }
 
     function fmtPhoneTime(sec) {
       const s = Math.max(0, Math.ceil(sec));
@@ -7955,12 +8075,13 @@ const App = (() => {
       clearDraftSync();
       if (!me) return;
       const clean = String(val || '').trim();
+      saveDraftToSession(activeCloneRound, val, mySubmittedClonePrompt);
       if (!clean || clean === lastSyncedDraft) return;
-      // Save draft to retained per-player topic every ~4s so even a dead battery/dropped phone is never lost!
-      const waitMs = 3500 + Math.floor(Math.random() * 1500);
+      // Save draft to retained per-player topic every ~3s so even a dead battery/dropped phone is never lost!
+      const waitMs = 2600 + Math.floor(Math.random() * 1200);
       draftSyncTimer = setTimeout(() => {
         draftSyncTimer = null;
-        if (hostState.game === 'promptClone' && hostState.phase === 'writing' && !pendingCloneSub) {
+        if (hostState.game === 'promptClone' && hostState.phase === 'writing' && (!pendingCloneSub || editingLockedClone)) {
           const cur = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
           if (cur && cur !== lastSyncedDraft) {
             lastSyncedDraft = cur;
@@ -7994,16 +8115,21 @@ const App = (() => {
       });
     }
 
-    // Guaranteed submission: sends immediately AND retries every 2.6s until Host confirms me.id in submittedIds!
+    // Unbreakable submission: sends immediately, auto-recovers zombie mobile WebSockets via reconnectNow(),
+    // and retries every 2.5s until Host confirms me.id in submittedIds (or me.id appears in results)!
     function lockInClonePromptGuaranteed(roundKey, text, autoCollected = false) {
       const clean = String(text || '').trim();
       if (!clean || !me) return;
       clearDraftSync();
       clearDeadlineWatchdog();
+      editingLockedClone = false;
+      shortLockWarn = false;
       submittedKey = roundKey;
       mySubmittedClonePrompt = clean;
-      cloneDraft = '';
-      pendingCloneSub = { roundKey, text: clean, autoCollected: !!autoCollected, tries: 0 };
+      cloneDraft = clean; // Keep copy in memory + sessionStorage so it can NEVER be lost!
+      saveDraftToSession(roundKey, clean, clean);
+      const alreadyConfirmedBefore = hostState.game === 'promptClone' && Array.isArray(hostState.payload?.submittedIds) && hostState.payload.submittedIds.includes(me.id);
+      pendingCloneSub = { roundKey, text: clean, autoCollected: !!autoCollected, tries: 0, isUpdate: alreadyConfirmedBefore };
       sendCloneSubmissionNow(clean, autoCollected);
 
       if (submitRetryTimer) clearInterval(submitRetryTimer);
@@ -8011,13 +8137,25 @@ const App = (() => {
         if (!pendingCloneSub || !me) { clearSubmitRetry(); return; }
         const st = hostState;
         const confirmed = st.game === 'promptClone' && Array.isArray(st.payload?.submittedIds) && st.payload.submittedIds.includes(me.id);
-        if (confirmed || st.game !== 'promptClone' || st.phase === 'results' || st.phase === 'lobby' || pendingCloneSub.tries >= 8) {
+        const inResults = st.game === 'promptClone' && st.phase === 'results' && normalizeResults(st.payload || {}).some(r => r.playerId === me.id);
+        // Stop only when Host confirms receipt (or appears in results, or Host left the round).
+        const done = inResults || st.game !== 'promptClone' || st.phase === 'lobby' ||
+          (confirmed && (!pendingCloneSub.isUpdate || pendingCloneSub.tries >= 2));
+        if (done) {
           clearSubmitRetry();
           return;
         }
         pendingCloneSub.tries++;
-        sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
-      }, 2600);
+        // Every 2nd unconfirmed retry (~5s), force-reopen WebSocket to kill silent zombie mobile TCP sockets!
+        if (pendingCloneSub.tries % 2 === 0 && RoomSync.reconnectNow) {
+          RoomSync.reconnectNow();
+          setTimeout(() => {
+            if (pendingCloneSub) sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
+          }, 900);
+        } else {
+          sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
+        }
+      }, 2500);
     }
 
     function getLocalArt(prompt) {
@@ -8368,7 +8506,7 @@ const App = (() => {
       const cloneRoundKey = `clone_${payload.roundId || payload.title || ''}`;
       const botRoundKey = `bot_${payload.question || ''}`;
 
-      // Reset draft cleanly only when a genuinely new round begins
+      // Reset draft cleanly only when a genuinely new round begins (restoring from sessionStorage if the phone just refreshed!)
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
         clearDraftSync();
         clearSubmitRetry();
@@ -8378,10 +8516,13 @@ const App = (() => {
         phoneWarned15 = false;
         phoneLastBeepSec = 11;
         phoneBuzzedZero = false;
+        editingLockedClone = false;
+        shortLockWarn = false;
         activeCloneRound = cloneRoundKey;
-        cloneDraft = '';
+        const restored = loadDraftFromSession(cloneRoundKey);
+        cloneDraft = restored.d || '';
         lastSyncedDraft = '';
-        mySubmittedClonePrompt = '';
+        mySubmittedClonePrompt = restored.s || '';
         // Compute clock-skew-free local deadline from relative timeLeft so every phone counts down identically!
         const secRem = typeof payload.timeLeft === 'number' ? payload.timeLeft : (Number(payload.durationSec) || 180);
         localDeadlineTs = Date.now() + Math.max(0, secRem) * 1000;
@@ -8392,23 +8533,24 @@ const App = (() => {
       }
 
       const hostConfirmedClone = (payload.submittedIds || []).includes(me.id);
-      if (hostConfirmedClone && pendingCloneSub && pendingCloneSub.roundKey === cloneRoundKey) {
+      if (hostConfirmedClone && pendingCloneSub && pendingCloneSub.roundKey === cloneRoundKey && !pendingCloneSub.isUpdate) {
         clearSubmitRetry();
       }
       const cloneAlready = hostConfirmedClone || submittedKey === cloneRoundKey;
+      const showCloneEditor = !cloneAlready || editingLockedClone;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
       const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
       // Local deadline watchdog: even if mobile Safari/Chrome dropped WebSocket while typing, auto-submit at deadline!
-      if (game === 'promptClone' && phase === 'writing' && !cloneAlready && localDeadlineTs && deadlineRoundKey !== cloneRoundKey) {
+      if (game === 'promptClone' && phase === 'writing' && showCloneEditor && localDeadlineTs && deadlineRoundKey !== cloneRoundKey) {
         clearDeadlineWatchdog();
         const msLeft = Math.max(0, localDeadlineTs - Date.now());
         if (msLeft > 0 && msLeft < 600000) {
           deadlineRoundKey = cloneRoundKey;
           deadlineTimer = setTimeout(() => {
             deadlineTimer = null;
-            if (hostState.game === 'promptClone' && hostState.phase === 'writing' && submittedKey !== cloneRoundKey) {
-              const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+            if (hostState.game === 'promptClone' && hostState.phase === 'writing' && (submittedKey !== cloneRoundKey || editingLockedClone)) {
+              const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft ?? mySubmittedClonePrompt).trim();
               if (liveVal) {
                 SoundFX.buzzer();
                 lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
@@ -8419,19 +8561,28 @@ const App = (() => {
         }
       }
 
-      // If time just ran out (collecting OR even if phone woke up directly in grading!), grab whatever is typed BEFORE DOM is replaced!
-      if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading') && !cloneAlready) {
-        const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
-        if (liveVal) {
+      // If time just ran out (collecting OR grading), grab whatever is typed (including unlocked edits!) OR re-send unconfirmed submission!
+      if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading')) {
+        const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft ?? mySubmittedClonePrompt).trim();
+        if (liveVal && (!cloneAlready || editingLockedClone || (!hostConfirmedClone && !pendingCloneSub))) {
           SoundFX.buzzer();
           lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
+        }
+      }
+
+      // Ultra-late recovery: if results appeared but THIS player had typed/submitted a prompt and wasn't included yet, auto-push to Host!
+      if (game === 'promptClone' && phase === 'results' && activeCloneRound === cloneRoundKey) {
+        const inResults = cloneResultItems.some(r => r.playerId === me.id);
+        const savedText = (mySubmittedClonePrompt || cloneDraft || '').trim();
+        if (!inResults && savedText && !pendingCloneSub && cloneResultItems.length > 0) {
+          lockInClonePromptGuaranteed(cloneRoundKey, savedText, true);
         }
       }
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
-        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? (hostConfirmedClone ? 'confirmed' : 'sending') : 'edit'}`;
+        viewKey = `promptClone:writing:${cloneRoundKey}:${showCloneEditor ? 'edit' : (hostConfirmedClone ? 'confirmed' : 'sending')}`;
       } else if (game === 'promptClone' && phase === 'results') {
         viewKey = `promptClone:results:${cloneRoundKey}:${cloneResultItems.length}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -8453,14 +8604,17 @@ const App = (() => {
         const imgHtml = getPhoneCloneImageHtml(payload);
         const myPreviewUrl = mySubmittedClonePrompt ? getLocalArt(mySubmittedClonePrompt) : '';
         const cdBanner = renderPhoneCountdownBanner(payload);
-        body = cloneAlready ? `
+        body = !showCloneEditor ? `
           ${cdBanner}
           <div class="card center stack">
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
-            <span class="tag ${hostConfirmedClone ? 'tag-kid' : 'tag-gold'}" id="phone-confirm-pill">
-              ${hostConfirmedClone ? '✅ Confirmed by Host!' : '⏳ Confirming with Host…'}
-            </span>
+            <div class="row" style="justify-content:center;flex-wrap:wrap;gap:8px;">
+              <span class="tag ${hostConfirmedClone ? 'tag-kid' : 'tag-gold'}" id="phone-confirm-pill">
+                ${hostConfirmedClone ? '✅ Confirmed by Host!' : '⏳ Confirming with Host…'}
+              </span>
+              ${!hostConfirmedClone ? `<button class="btn btn-sm" id="p-clone-resend" style="min-height:28px;padding:4px 10px;">🔄 Resend Now</button>` : ''}
+            </div>
             ${myPreviewUrl ? `
               <p class="xs muted" style="margin:0;">Instant preview while everyone finishes (everyone's real AI images &amp; rankings appear here automatically!):</p>
               <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
@@ -8469,6 +8623,7 @@ const App = (() => {
               <p class="small muted">Waiting for everyone else—everyone's AI images &amp; rankings will appear right here automatically!</p>
               <div id="phone-target-slot">${imgHtml}</div>
             `}
+            <button class="btn" id="p-clone-edit" style="width:100%;">✏️ Clicked by Accident? Edit / Update My Prompt</button>
           </div>` : `
           ${cdBanner}
           <div class="card stack">
@@ -8478,10 +8633,11 @@ const App = (() => {
             </div>
             <h2 style="margin:0;">🔍 Recreate This Image!</h2>
             <div id="phone-target-slot">${imgHtml}</div>
-            <p class="xs muted" style="margin:0;">Describe everything you see in your own words — no hints!</p>
+            <p class="xs muted" style="margin:0;">Describe everything you see in your own words — subject, setting, props, colors &amp; art style!</p>
             <textarea class="textarea" id="p-clone-in" placeholder="Describe what you see in your own words...">${esc(cloneDraft)}</textarea>
-            <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
-            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits at 0:00!</p>
+            <div id="p-clone-warn" class="xs" style="display:none;background:#FFF3D1;border:1.5px solid #D48806;color:#7C4700;padding:8px 10px;border-radius:8px;font-weight:700;"></div>
+            <button class="btn btn-primary btn-lg" id="p-clone-send">${editingLockedClone ? '🔒 Save & Update My Prompt!' : '🔒 Lock In My Prompt!'}</button>
+            <p class="xs muted center" style="margin:0;">⏱️ You can always edit until 0:00 — and whatever you typed auto-submits when time runs out!</p>
           </div>`;
       } else if (game === 'promptClone' && phase === 'collecting') {
         body = `
@@ -8672,10 +8828,40 @@ const App = (() => {
       else stopPhoneCountdown();
 
       // Bind dynamic phone controller actions
+      const pCloneEdit = document.getElementById('p-clone-edit');
+      if (pCloneEdit) {
+        pCloneEdit.onclick = () => {
+          SoundFX.pop();
+          editingLockedClone = true;
+          shortLockWarn = false;
+          cloneDraft = mySubmittedClonePrompt || cloneDraft || '';
+          lastViewKey = '';
+          renderPhone();
+        };
+      }
+      const pCloneResend = document.getElementById('p-clone-resend');
+      if (pCloneResend) {
+        pCloneResend.onclick = () => {
+          SoundFX.pop();
+          pCloneResend.textContent = '📡 Reconnecting…';
+          const textToSend = (mySubmittedClonePrompt || cloneDraft || '').trim();
+          if (RoomSync.reconnectNow) RoomSync.reconnectNow();
+          if (textToSend) {
+            setTimeout(() => sendCloneSubmissionNow(textToSend, false), 700);
+          }
+        };
+      }
       const pCloneIn = document.getElementById('p-clone-in');
       if (pCloneIn) {
+        const warnEl = document.getElementById('p-clone-warn');
+        const sendBtn = document.getElementById('p-clone-send');
         pCloneIn.oninput = (e) => {
           cloneDraft = e.target.value;
+          if (shortLockWarn) {
+            shortLockWarn = false;
+            if (warnEl) warnEl.style.display = 'none';
+            if (sendBtn) sendBtn.textContent = editingLockedClone ? '🔒 Save & Update My Prompt!' : '🔒 Lock In My Prompt!';
+          }
           scheduleCloneDraftSync(cloneDraft);
         };
         app.querySelectorAll('[data-pchip]').forEach(ch => {
@@ -8685,9 +8871,27 @@ const App = (() => {
             scheduleCloneDraftSync(cloneDraft);
           };
         });
-        document.getElementById('p-clone-send').onclick = () => {
+        sendBtn.onclick = () => {
           const val = pCloneIn.value.trim();
-          if (!val) return;
+          if (!val) {
+            if (warnEl) {
+              warnEl.textContent = '✍️ Type a few words describing the picture first!';
+              warnEl.style.display = 'block';
+            }
+            return;
+          }
+          const wordCount = val.split(/\s+/).filter(Boolean).length;
+          // Accidental lock-in protection: require 2nd tap if prompt is very short (< 4 words)!
+          if (wordCount < 4 && !shortLockWarn) {
+            shortLockWarn = true;
+            SoundFX.pop();
+            if (warnEl) {
+              warnEl.textContent = `⚠️ Only ${wordCount} word${wordCount === 1 ? '' : 's'} so far — short prompts score much lower! Keep typing, or tap again to lock in anyway.`;
+              warnEl.style.display = 'block';
+            }
+            sendBtn.textContent = `🔒 Lock In Anyway (${wordCount} word${wordCount === 1 ? '' : 's'})`;
+            return;
+          }
           SoundFX.ding();
           lockInClonePromptGuaranteed(cloneRoundKey, val, false);
           renderPhone();

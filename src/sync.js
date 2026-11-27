@@ -69,7 +69,7 @@ const RoomSync = (() => {
     'wss://broker.hivemq.com:8884/mqtt',
   ];
 
-  let mode = 'local'; // 'lan' | 'cloud' | 'local'
+  let mode = 'local'; // 'lan' | 'local' | 'cloud'
   let roomCode = '';
   let lanBaseUrl = '';
   let es = null;
@@ -77,9 +77,12 @@ const RoomSync = (() => {
   let ws = null;
   let mqttReady = false;
   let brokerIdx = 0;
+  let lockedBrokerIdx = -1; // Once a room message arrives on a broker, NEVER split-brain to another broker!
   let consecutiveFails = 0;
   let pktCounter = 1;
   let pingTimer = null;
+  let pongTimer = null;
+  let lastRxTs = 0;
   let reconnectTimer = null;
   let wakeHandler = null;
   let shouldRun = false;
@@ -170,9 +173,9 @@ const RoomSync = (() => {
           outbox.unshift(item);
           break;
         }
-        // Gently pace large image packets (~35KB) so 10 concurrent images stream smoothly to all 10+ phones!
+        // Gently pace large image packets (~35KB) so 10 concurrent images stream smoothly without broker throttle!
         if (item.bodyStr.length > 8000) {
-          await new Promise(r => setTimeout(r, 120));
+          await new Promise(r => setTimeout(r, 180));
         }
       }
     } finally {
@@ -180,14 +183,20 @@ const RoomSync = (() => {
     }
   }
 
+  function clearHeartbeatTimers() {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+  }
+
   function openMqttSocket() {
     if (!shouldRun || mode !== 'cloud' || !roomCode) return;
     if (ws) { try { ws.close(); } catch (_) {} ws = null; }
-    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    clearHeartbeatTimers();
     mqttReady = false;
     notifyStatus();
 
-    const url = MQTT_BROKERS[brokerIdx % MQTT_BROKERS.length];
+    const activeIdx = lockedBrokerIdx >= 0 ? lockedBrokerIdx : (brokerIdx % MQTT_BROKERS.length);
+    const url = MQTT_BROKERS[activeIdx];
     let sock;
     try {
       sock = new WebSocket(url, 'mqtt');
@@ -202,9 +211,9 @@ const RoomSync = (() => {
     const connectGuard = setTimeout(() => {
       if (!mqttReady && ws === sock) {
         consecutiveFails++;
-        // Only rotate broker if primary fails 4+ times in a row (prevents 1 phone splitting onto a different broker!)
-        if (consecutiveFails >= 4) {
-          brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+        // Never split-brain once locked onto the room's broker! Before locking, bounce back to primary (#0) quickly.
+        if (lockedBrokerIdx < 0 && consecutiveFails >= 4) {
+          brokerIdx = brokerIdx === 0 ? 1 : 0;
           consecutiveFails = 0;
         }
         try { sock.close(); } catch (_) {}
@@ -220,6 +229,9 @@ const RoomSync = (() => {
 
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
+      lastRxTs = Date.now();
+      if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+
       const chunk = new Uint8Array(ev.data);
       const merged = new Uint8Array(buf.length + chunk.length);
       merged.set(buf);
@@ -236,7 +248,8 @@ const RoomSync = (() => {
           if (pos > 5) { buf = new Uint8Array(0); return; }
         }
         if (!complete || buf.length < pos + len) break;
-        const type = buf[0] >> 4;
+        const headerByte = buf[0];
+        const type = headerByte >> 4;
         const body = buf.subarray(pos, pos + len);
         buf = buf.subarray(pos + len);
 
@@ -244,25 +257,45 @@ const RoomSync = (() => {
           clearTimeout(connectGuard);
           consecutiveFails = 0;
           mqttReady = true;
+          lastRxTs = Date.now();
           notifyStatus();
           try {
             sock.send(mqttSubPkt(++pktCounter, roomPrefix() + '/#'));
           } catch (_) {}
-          if (pingTimer) clearInterval(pingTimer);
+          clearHeartbeatTimers();
+          // Real MQTT Keep-Alive watchdog: detects silent zombie mobile TCP sockets within 5–12s!
           pingTimer = setInterval(() => {
             if (ws === sock && sock.readyState === 1) {
-              try { sock.send(new Uint8Array([0xC0, 0x00])); } catch (_) {}
+              try {
+                sock.send(new Uint8Array([0xC0, 0x00])); // PINGREQ
+                if (pongTimer) clearTimeout(pongTimer);
+                pongTimer = setTimeout(() => {
+                  pongTimer = null;
+                  if (ws === sock) {
+                    try { sock.close(); } catch (_) {}
+                  }
+                }, 5000);
+              } catch (_) {
+                try { sock.close(); } catch (_) {}
+              }
             }
-          }, 24000);
+          }, 12000);
           flushOutbox();
+        } else if (type === 13) { // PINGRESP
+          if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
         } else if (type === 3) { // PUBLISH
           if (body.length < 2) continue;
           const tlen = (body[0] << 8) | body[1];
-          if (2 + tlen > body.length) continue;
-          const payloadStr = dec.decode(body.subarray(2 + tlen));
+          const qos = (headerByte >> 1) & 3;
+          const payloadStart = 2 + tlen + (qos > 0 ? 2 : 0);
+          if (payloadStart > body.length) continue;
+          const payloadStr = dec.decode(body.subarray(payloadStart));
           if (!payloadStr) continue;
           try {
             const parsed = JSON.parse(payloadStr);
+            if (parsed && parsed.type === 'HOST_STATE' && lockedBrokerIdx < 0) {
+              lockedBrokerIdx = activeIdx;
+            }
             emit(parsed);
           } catch (_) {}
         }
@@ -271,17 +304,18 @@ const RoomSync = (() => {
 
     sock.onclose = () => {
       clearTimeout(connectGuard);
+      clearHeartbeatTimers();
       if (ws !== sock) return;
       ws = null;
       mqttReady = false;
       notifyStatus();
-      if (shouldRun) scheduleReconnect(1200);
+      if (shouldRun) scheduleReconnect(900);
     };
 
     sock.onerror = () => {};
   }
 
-  function scheduleReconnect(delayMs = 1200) {
+  function scheduleReconnect(delayMs = 900) {
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -291,19 +325,23 @@ const RoomSync = (() => {
     }, delayMs);
   }
 
-  // Re-subscribe (or reconnect) to immediately pull all retained state, submissions, drafts, results & AI images!
-  async function pollNow() {
+  function reconnectNow() {
+    if (mode !== 'cloud' || !roomCode || !shouldRun) return;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    openMqttSocket();
+  }
+
+  // Re-pull all retained state, submissions, drafts, results & AI images with ZERO unsubscribe blackout!
+  async function pollNow(forceReconnect = false) {
     if (mode !== 'cloud' || !roomCode) return;
-    if (ws && ws.readyState === 1 && mqttReady) {
+    const stale = !lastRxTs || (Date.now() - lastRxTs > 15000);
+    if (!forceReconnect && !stale && ws && ws.readyState === 1 && mqttReady) {
       try {
-        const sub = roomPrefix() + '/#';
-        ws.send(mqttUnsubPkt(++pktCounter, sub));
-        setTimeout(() => {
-          if (ws && ws.readyState === 1 && mqttReady) {
-            try { ws.send(mqttSubPkt(++pktCounter, sub)); } catch (_) {}
-          }
-        }, 120);
-      } catch (_) {}
+        // MQTT 3.1.1 §3.8.4: re-sending SUBSCRIBE atomically re-delivers all retained messages without dropping live traffic!
+        ws.send(mqttSubPkt(++pktCounter, roomPrefix() + '/#'));
+      } catch (_) {
+        openMqttSocket();
+      }
     } else {
       openMqttSocket();
     }
@@ -314,7 +352,9 @@ const RoomSync = (() => {
     roomCode = (code || genCode(4)).toUpperCase();
     shouldRun = true;
     brokerIdx = 0;
+    lockedBrokerIdx = -1;
     consecutiveFails = 0;
+    lastRxTs = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -336,8 +376,8 @@ const RoomSync = (() => {
       if (typeof document !== 'undefined') {
         wakeHandler = () => {
           if (!document.hidden && shouldRun) {
-            if (!ws || ws.readyState !== 1 || !mqttReady) openMqttSocket();
-            else pollNow();
+            if (!ws || ws.readyState !== 1 || !mqttReady || (Date.now() - lastRxTs > 12000)) openMqttSocket();
+            else pollNow(false);
           }
         };
         document.addEventListener('visibilitychange', wakeHandler);
@@ -354,7 +394,7 @@ const RoomSync = (() => {
     mqttReady = false;
     outbox = [];
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    clearHeartbeatTimers();
     if (ws) { try { ws.close(); } catch (_) {} ws = null; }
     if (es) { try { es.close(); } catch (_) {} es = null; }
     if (bc) { try { bc.close(); } catch (_) {} bc = null; }
@@ -367,21 +407,21 @@ const RoomSync = (() => {
   }
 
   function mqttSubTopicFor(msg) {
-    if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true };
-    if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true };
-    if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true };
+    if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true, priority: true };
+    if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true, priority: true };
+    if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true, priority: false };
     // Retain every participant's prompt submission & draft on their own topic so Host NEVER misses anyone!
-    if (msg.type === 'ACTION' && msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.roundId) {
+    if (msg.type === 'ACTION' && msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId) {
       const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
-      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
-      return { subTopic: `sub/${rid}/${pid}`, retain: true };
+      const rid = msg.roundId ? String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '') : 'latest';
+      return { subTopic: `sub/${rid}/${pid}`, retain: true, priority: true };
     }
-    if (msg.type === 'ACTION' && msg.action === 'CLONE_DRAFT' && msg.playerId && msg.roundId) {
+    if (msg.type === 'ACTION' && msg.action === 'CLONE_DRAFT' && msg.playerId) {
       const pid = String(msg.playerId).replace(/[^a-zA-Z0-9_-]/g, '');
-      const rid = String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '');
-      return { subTopic: `draft/${rid}/${pid}`, retain: true };
+      const rid = msg.roundId ? String(msg.roundId).replace(/[^a-zA-Z0-9_-]/g, '') : 'latest';
+      return { subTopic: `draft/${rid}/${pid}`, retain: true, priority: false };
     }
-    return { subTopic: 'events', retain: false };
+    return { subTopic: 'events', retain: false, priority: true };
   }
 
   function clearRetained(subTopic) {
@@ -414,13 +454,15 @@ const RoomSync = (() => {
         ok = res.ok;
       } catch (_) { ok = false; }
     } else if (mode === 'cloud' && roomCode) {
-      const { subTopic, retain } = mqttSubTopicFor(msg);
+      const { subTopic, retain, priority } = mqttSubTopicFor(msg);
       const bodyStr = JSON.stringify(msg);
-      // Replace any older queued HOST_STATE in outbox so only the newest state flushes!
-      if (subTopic === 'state') {
-        outbox = outbox.filter(x => x.subTopic !== 'state');
+      // Replace any older queued packet for the same retained state/sub/draft topic so only the newest flushes!
+      if (subTopic === 'state' || subTopic === 'results' || subTopic.startsWith('sub/') || subTopic.startsWith('draft/')) {
+        outbox = outbox.filter(x => x.subTopic !== subTopic);
       }
-      outbox.push({ subTopic, bodyStr, retain });
+      const entry = { subTopic, bodyStr, retain };
+      if (priority) outbox.unshift(entry);
+      else outbox.push(entry);
       flushOutbox();
       ok = mqttReady;
     }
@@ -528,6 +570,7 @@ const RoomSync = (() => {
     connect,
     disconnect,
     pollNow,
+    reconnectNow,
     send,
     clearRetained,
     uploadImage,

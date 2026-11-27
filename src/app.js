@@ -1007,12 +1007,14 @@ const App = (() => {
     let hostState = { game: null, phase: 'hub', payload: {}, leaderboard: [] };
     let submittedKey = '';
     let mySubmittedClonePrompt = '';
+    let editingLockedClone = false;
+    let shortLockWarn = false;
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
     let lastSyncedDraft = '';
     let draftSyncTimer = null;
-    let pendingCloneSub = null; // { roundKey, text, autoCollected } — retried until Host confirms receipt!
+    let pendingCloneSub = null; // { roundKey, text, autoCollected, tries, isUpdate } — retried until Host confirms!
     let submitRetryTimer = null;
     let deadlineTimer = null;
     let deadlineRoundKey = '';
@@ -1029,6 +1031,25 @@ const App = (() => {
     const receivedImages = {}; // imgKey -> dataUrl
     const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
     const localGenCache = {}; // prompt -> dataUrl
+
+    function saveDraftToSession(roundKey, draftText, submittedText) {
+      if (!roundKey) return;
+      try {
+        sessionStorage.setItem(`tg26_cd_${roomCode}_${roundKey}`, JSON.stringify({
+          d: draftText || '',
+          s: submittedText || '',
+        }));
+      } catch (_) {}
+    }
+
+    function loadDraftFromSession(roundKey) {
+      if (!roundKey) return { d: '', s: '' };
+      try {
+        const raw = sessionStorage.getItem(`tg26_cd_${roomCode}_${roundKey}`);
+        if (raw) return JSON.parse(raw);
+      } catch (_) {}
+      return { d: '', s: '' };
+    }
 
     function fmtPhoneTime(sec) {
       const s = Math.max(0, Math.ceil(sec));
@@ -1130,12 +1151,13 @@ const App = (() => {
       clearDraftSync();
       if (!me) return;
       const clean = String(val || '').trim();
+      saveDraftToSession(activeCloneRound, val, mySubmittedClonePrompt);
       if (!clean || clean === lastSyncedDraft) return;
-      // Save draft to retained per-player topic every ~4s so even a dead battery/dropped phone is never lost!
-      const waitMs = 3500 + Math.floor(Math.random() * 1500);
+      // Save draft to retained per-player topic every ~3s so even a dead battery/dropped phone is never lost!
+      const waitMs = 2600 + Math.floor(Math.random() * 1200);
       draftSyncTimer = setTimeout(() => {
         draftSyncTimer = null;
-        if (hostState.game === 'promptClone' && hostState.phase === 'writing' && !pendingCloneSub) {
+        if (hostState.game === 'promptClone' && hostState.phase === 'writing' && (!pendingCloneSub || editingLockedClone)) {
           const cur = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
           if (cur && cur !== lastSyncedDraft) {
             lastSyncedDraft = cur;
@@ -1169,16 +1191,21 @@ const App = (() => {
       });
     }
 
-    // Guaranteed submission: sends immediately AND retries every 2.6s until Host confirms me.id in submittedIds!
+    // Unbreakable submission: sends immediately, auto-recovers zombie mobile WebSockets via reconnectNow(),
+    // and retries every 2.5s until Host confirms me.id in submittedIds (or me.id appears in results)!
     function lockInClonePromptGuaranteed(roundKey, text, autoCollected = false) {
       const clean = String(text || '').trim();
       if (!clean || !me) return;
       clearDraftSync();
       clearDeadlineWatchdog();
+      editingLockedClone = false;
+      shortLockWarn = false;
       submittedKey = roundKey;
       mySubmittedClonePrompt = clean;
-      cloneDraft = '';
-      pendingCloneSub = { roundKey, text: clean, autoCollected: !!autoCollected, tries: 0 };
+      cloneDraft = clean; // Keep copy in memory + sessionStorage so it can NEVER be lost!
+      saveDraftToSession(roundKey, clean, clean);
+      const alreadyConfirmedBefore = hostState.game === 'promptClone' && Array.isArray(hostState.payload?.submittedIds) && hostState.payload.submittedIds.includes(me.id);
+      pendingCloneSub = { roundKey, text: clean, autoCollected: !!autoCollected, tries: 0, isUpdate: alreadyConfirmedBefore };
       sendCloneSubmissionNow(clean, autoCollected);
 
       if (submitRetryTimer) clearInterval(submitRetryTimer);
@@ -1186,13 +1213,25 @@ const App = (() => {
         if (!pendingCloneSub || !me) { clearSubmitRetry(); return; }
         const st = hostState;
         const confirmed = st.game === 'promptClone' && Array.isArray(st.payload?.submittedIds) && st.payload.submittedIds.includes(me.id);
-        if (confirmed || st.game !== 'promptClone' || st.phase === 'results' || st.phase === 'lobby' || pendingCloneSub.tries >= 8) {
+        const inResults = st.game === 'promptClone' && st.phase === 'results' && normalizeResults(st.payload || {}).some(r => r.playerId === me.id);
+        // Stop only when Host confirms receipt (or appears in results, or Host left the round).
+        const done = inResults || st.game !== 'promptClone' || st.phase === 'lobby' ||
+          (confirmed && (!pendingCloneSub.isUpdate || pendingCloneSub.tries >= 2));
+        if (done) {
           clearSubmitRetry();
           return;
         }
         pendingCloneSub.tries++;
-        sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
-      }, 2600);
+        // Every 2nd unconfirmed retry (~5s), force-reopen WebSocket to kill silent zombie mobile TCP sockets!
+        if (pendingCloneSub.tries % 2 === 0 && RoomSync.reconnectNow) {
+          RoomSync.reconnectNow();
+          setTimeout(() => {
+            if (pendingCloneSub) sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
+          }, 900);
+        } else {
+          sendCloneSubmissionNow(pendingCloneSub.text, pendingCloneSub.autoCollected);
+        }
+      }, 2500);
     }
 
     function getLocalArt(prompt) {
@@ -1543,7 +1582,7 @@ const App = (() => {
       const cloneRoundKey = `clone_${payload.roundId || payload.title || ''}`;
       const botRoundKey = `bot_${payload.question || ''}`;
 
-      // Reset draft cleanly only when a genuinely new round begins
+      // Reset draft cleanly only when a genuinely new round begins (restoring from sessionStorage if the phone just refreshed!)
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
         clearDraftSync();
         clearSubmitRetry();
@@ -1553,10 +1592,13 @@ const App = (() => {
         phoneWarned15 = false;
         phoneLastBeepSec = 11;
         phoneBuzzedZero = false;
+        editingLockedClone = false;
+        shortLockWarn = false;
         activeCloneRound = cloneRoundKey;
-        cloneDraft = '';
+        const restored = loadDraftFromSession(cloneRoundKey);
+        cloneDraft = restored.d || '';
         lastSyncedDraft = '';
-        mySubmittedClonePrompt = '';
+        mySubmittedClonePrompt = restored.s || '';
         // Compute clock-skew-free local deadline from relative timeLeft so every phone counts down identically!
         const secRem = typeof payload.timeLeft === 'number' ? payload.timeLeft : (Number(payload.durationSec) || 180);
         localDeadlineTs = Date.now() + Math.max(0, secRem) * 1000;
@@ -1567,23 +1609,24 @@ const App = (() => {
       }
 
       const hostConfirmedClone = (payload.submittedIds || []).includes(me.id);
-      if (hostConfirmedClone && pendingCloneSub && pendingCloneSub.roundKey === cloneRoundKey) {
+      if (hostConfirmedClone && pendingCloneSub && pendingCloneSub.roundKey === cloneRoundKey && !pendingCloneSub.isUpdate) {
         clearSubmitRetry();
       }
       const cloneAlready = hostConfirmedClone || submittedKey === cloneRoundKey;
+      const showCloneEditor = !cloneAlready || editingLockedClone;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
       const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
       // Local deadline watchdog: even if mobile Safari/Chrome dropped WebSocket while typing, auto-submit at deadline!
-      if (game === 'promptClone' && phase === 'writing' && !cloneAlready && localDeadlineTs && deadlineRoundKey !== cloneRoundKey) {
+      if (game === 'promptClone' && phase === 'writing' && showCloneEditor && localDeadlineTs && deadlineRoundKey !== cloneRoundKey) {
         clearDeadlineWatchdog();
         const msLeft = Math.max(0, localDeadlineTs - Date.now());
         if (msLeft > 0 && msLeft < 600000) {
           deadlineRoundKey = cloneRoundKey;
           deadlineTimer = setTimeout(() => {
             deadlineTimer = null;
-            if (hostState.game === 'promptClone' && hostState.phase === 'writing' && submittedKey !== cloneRoundKey) {
-              const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+            if (hostState.game === 'promptClone' && hostState.phase === 'writing' && (submittedKey !== cloneRoundKey || editingLockedClone)) {
+              const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft ?? mySubmittedClonePrompt).trim();
               if (liveVal) {
                 SoundFX.buzzer();
                 lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
@@ -1594,19 +1637,28 @@ const App = (() => {
         }
       }
 
-      // If time just ran out (collecting OR even if phone woke up directly in grading!), grab whatever is typed BEFORE DOM is replaced!
-      if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading') && !cloneAlready) {
-        const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
-        if (liveVal) {
+      // If time just ran out (collecting OR grading), grab whatever is typed (including unlocked edits!) OR re-send unconfirmed submission!
+      if (game === 'promptClone' && (phase === 'collecting' || phase === 'grading')) {
+        const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft ?? mySubmittedClonePrompt).trim();
+        if (liveVal && (!cloneAlready || editingLockedClone || (!hostConfirmedClone && !pendingCloneSub))) {
           SoundFX.buzzer();
           lockInClonePromptGuaranteed(cloneRoundKey, liveVal, true);
+        }
+      }
+
+      // Ultra-late recovery: if results appeared but THIS player had typed/submitted a prompt and wasn't included yet, auto-push to Host!
+      if (game === 'promptClone' && phase === 'results' && activeCloneRound === cloneRoundKey) {
+        const inResults = cloneResultItems.some(r => r.playerId === me.id);
+        const savedText = (mySubmittedClonePrompt || cloneDraft || '').trim();
+        if (!inResults && savedText && !pendingCloneSub && cloneResultItems.length > 0) {
+          lockInClonePromptGuaranteed(cloneRoundKey, savedText, true);
         }
       }
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
-        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? (hostConfirmedClone ? 'confirmed' : 'sending') : 'edit'}`;
+        viewKey = `promptClone:writing:${cloneRoundKey}:${showCloneEditor ? 'edit' : (hostConfirmedClone ? 'confirmed' : 'sending')}`;
       } else if (game === 'promptClone' && phase === 'results') {
         viewKey = `promptClone:results:${cloneRoundKey}:${cloneResultItems.length}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -1628,14 +1680,17 @@ const App = (() => {
         const imgHtml = getPhoneCloneImageHtml(payload);
         const myPreviewUrl = mySubmittedClonePrompt ? getLocalArt(mySubmittedClonePrompt) : '';
         const cdBanner = renderPhoneCountdownBanner(payload);
-        body = cloneAlready ? `
+        body = !showCloneEditor ? `
           ${cdBanner}
           <div class="card center stack">
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
-            <span class="tag ${hostConfirmedClone ? 'tag-kid' : 'tag-gold'}" id="phone-confirm-pill">
-              ${hostConfirmedClone ? '✅ Confirmed by Host!' : '⏳ Confirming with Host…'}
-            </span>
+            <div class="row" style="justify-content:center;flex-wrap:wrap;gap:8px;">
+              <span class="tag ${hostConfirmedClone ? 'tag-kid' : 'tag-gold'}" id="phone-confirm-pill">
+                ${hostConfirmedClone ? '✅ Confirmed by Host!' : '⏳ Confirming with Host…'}
+              </span>
+              ${!hostConfirmedClone ? `<button class="btn btn-sm" id="p-clone-resend" style="min-height:28px;padding:4px 10px;">🔄 Resend Now</button>` : ''}
+            </div>
             ${myPreviewUrl ? `
               <p class="xs muted" style="margin:0;">Instant preview while everyone finishes (everyone's real AI images &amp; rankings appear here automatically!):</p>
               <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
@@ -1644,6 +1699,7 @@ const App = (() => {
               <p class="small muted">Waiting for everyone else—everyone's AI images &amp; rankings will appear right here automatically!</p>
               <div id="phone-target-slot">${imgHtml}</div>
             `}
+            <button class="btn" id="p-clone-edit" style="width:100%;">✏️ Clicked by Accident? Edit / Update My Prompt</button>
           </div>` : `
           ${cdBanner}
           <div class="card stack">
@@ -1653,10 +1709,11 @@ const App = (() => {
             </div>
             <h2 style="margin:0;">🔍 Recreate This Image!</h2>
             <div id="phone-target-slot">${imgHtml}</div>
-            <p class="xs muted" style="margin:0;">Describe everything you see in your own words — no hints!</p>
+            <p class="xs muted" style="margin:0;">Describe everything you see in your own words — subject, setting, props, colors &amp; art style!</p>
             <textarea class="textarea" id="p-clone-in" placeholder="Describe what you see in your own words...">${esc(cloneDraft)}</textarea>
-            <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
-            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits at 0:00!</p>
+            <div id="p-clone-warn" class="xs" style="display:none;background:#FFF3D1;border:1.5px solid #D48806;color:#7C4700;padding:8px 10px;border-radius:8px;font-weight:700;"></div>
+            <button class="btn btn-primary btn-lg" id="p-clone-send">${editingLockedClone ? '🔒 Save & Update My Prompt!' : '🔒 Lock In My Prompt!'}</button>
+            <p class="xs muted center" style="margin:0;">⏱️ You can always edit until 0:00 — and whatever you typed auto-submits when time runs out!</p>
           </div>`;
       } else if (game === 'promptClone' && phase === 'collecting') {
         body = `
@@ -1847,10 +1904,40 @@ const App = (() => {
       else stopPhoneCountdown();
 
       // Bind dynamic phone controller actions
+      const pCloneEdit = document.getElementById('p-clone-edit');
+      if (pCloneEdit) {
+        pCloneEdit.onclick = () => {
+          SoundFX.pop();
+          editingLockedClone = true;
+          shortLockWarn = false;
+          cloneDraft = mySubmittedClonePrompt || cloneDraft || '';
+          lastViewKey = '';
+          renderPhone();
+        };
+      }
+      const pCloneResend = document.getElementById('p-clone-resend');
+      if (pCloneResend) {
+        pCloneResend.onclick = () => {
+          SoundFX.pop();
+          pCloneResend.textContent = '📡 Reconnecting…';
+          const textToSend = (mySubmittedClonePrompt || cloneDraft || '').trim();
+          if (RoomSync.reconnectNow) RoomSync.reconnectNow();
+          if (textToSend) {
+            setTimeout(() => sendCloneSubmissionNow(textToSend, false), 700);
+          }
+        };
+      }
       const pCloneIn = document.getElementById('p-clone-in');
       if (pCloneIn) {
+        const warnEl = document.getElementById('p-clone-warn');
+        const sendBtn = document.getElementById('p-clone-send');
         pCloneIn.oninput = (e) => {
           cloneDraft = e.target.value;
+          if (shortLockWarn) {
+            shortLockWarn = false;
+            if (warnEl) warnEl.style.display = 'none';
+            if (sendBtn) sendBtn.textContent = editingLockedClone ? '🔒 Save & Update My Prompt!' : '🔒 Lock In My Prompt!';
+          }
           scheduleCloneDraftSync(cloneDraft);
         };
         app.querySelectorAll('[data-pchip]').forEach(ch => {
@@ -1860,9 +1947,27 @@ const App = (() => {
             scheduleCloneDraftSync(cloneDraft);
           };
         });
-        document.getElementById('p-clone-send').onclick = () => {
+        sendBtn.onclick = () => {
           const val = pCloneIn.value.trim();
-          if (!val) return;
+          if (!val) {
+            if (warnEl) {
+              warnEl.textContent = '✍️ Type a few words describing the picture first!';
+              warnEl.style.display = 'block';
+            }
+            return;
+          }
+          const wordCount = val.split(/\s+/).filter(Boolean).length;
+          // Accidental lock-in protection: require 2nd tap if prompt is very short (< 4 words)!
+          if (wordCount < 4 && !shortLockWarn) {
+            shortLockWarn = true;
+            SoundFX.pop();
+            if (warnEl) {
+              warnEl.textContent = `⚠️ Only ${wordCount} word${wordCount === 1 ? '' : 's'} so far — short prompts score much lower! Keep typing, or tap again to lock in anyway.`;
+              warnEl.style.display = 'block';
+            }
+            sendBtn.textContent = `🔒 Lock In Anyway (${wordCount} word${wordCount === 1 ? '' : 's'})`;
+            return;
+          }
           SoundFX.ding();
           lockInClonePromptGuaranteed(cloneRoundKey, val, false);
           renderPhone();

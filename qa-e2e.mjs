@@ -196,7 +196,7 @@ async function main() {
     await g2.waitFor(`!!document.getElementById('p-clone-in') && document.querySelector('#phone-target-slot img')?.complete && document.querySelector('#phone-target-slot img')?.naturalWidth > 200`);
     assert(true, 'BOTH Alice and Bob see the exact Target Picture right on their own phones!');
 
-    // CRITICAL REGRESSION TEST: Alice types draft, Bob submits -> Alice's draft MUST NOT be deleted!
+    // CRITICAL REGRESSION TEST: Alice types draft & NEVER clicks Lock In; Bob submits -> Alice's draft MUST NOT be deleted!
     const aliceDraft = 'A cheerful cartoon turkey wearing black sunglasses on a red skateboard at golden sunset with falling leaves';
     await g1.type('#p-clone-in', aliceDraft);
     await g2.type('#p-clone-in', 'A cute bird on a sunny beach with a rainbow');
@@ -210,29 +210,32 @@ async function main() {
     const aliceCounter = await g1.eval(`document.getElementById('phone-sub-count')?.textContent`);
     assert(aliceCounter && aliceCounter.includes('1 locked in'), `Alice's live submission counter updated in-place: "${aliceCounter}"`);
 
-    // Now Alice submits too!
-    await g1.click('#p-clone-send');
-    await g1.waitFor(`document.body.innerText.includes('Prompt Locked In!')`);
-    await host.waitFor(`document.body.innerText.includes('Submissions (2/')`);
-
-    // Host clicks Generate Images & Grade All
+    // CRITICAL AUTO-COLLECT TEST: Alice NEVER clicks Lock In! Host ends round -> Alice's typed draft MUST be auto-collected!
     await host.click('#clone-grade-now');
-    await host.waitFor(`document.body.innerText.includes('Prompt Clone Results!')`);
+    await host.waitFor(`document.body.innerText.includes('Prompt Clone Results!')`, 12000);
     const hostCards = await host.eval(`document.querySelectorAll('.clone-card').length`);
-    assert(hostCards === 2, `Host shows both graded participant cards (${hostCards})`);
+    assert(hostCards === 2, `Host auto-collected Alice's unlocked draft & graded BOTH participants (${hostCards} cards)`);
+    assert(await host.eval(`document.body.innerText.includes('Alice') && document.body.innerText.includes('Auto-saved') && document.body.innerText.includes('Bob')`),
+      "Host results include Alice's auto-saved prompt AND Bob's locked-in prompt!");
 
-    // CRITICAL CHECK: Verify BOTH Guest Phones display the FULL Results Gallery + generated images!
-    await g1.waitFor(`document.body.innerText.includes('Full Family Results Gallery') && document.querySelectorAll('.clone-card').length >= 3`);
-    await g2.waitFor(`document.body.innerText.includes('Full Family Results Gallery') && document.querySelectorAll('.clone-card').length >= 3`);
+    // CRITICAL CHECK: Verify BOTH Guest Phones display ALL Participants Ranked (#1 -> #2) + generated images + prompts!
+    await g1.waitFor(`document.body.innerText.includes('All Participants Ranked') && document.querySelectorAll('.clone-card').length === 2`, 10000);
+    await g2.waitFor(`document.body.innerText.includes('All Participants Ranked') && document.querySelectorAll('.clone-card').length === 2`, 10000);
 
     const g1ImagesOk = await g1.eval(`Array.from(document.querySelectorAll('.clone-card img')).every(i => i.complete && i.naturalWidth > 0)`);
     const g2ImagesOk = await g2.eval(`Array.from(document.querySelectorAll('.clone-card img')).every(i => i.complete && i.naturalWidth > 0)`);
-    assert(g1ImagesOk, "Alice's phone renders ALL generated AI result images (including hers highlighted at top!)");
-    assert(g2ImagesOk, "Bob's phone renders ALL generated AI result images (including his highlighted at top!)");
-    assert(await g1.eval(`document.body.innerText.includes('Alice') && document.body.innerText.includes('Bob') && document.body.innerText.includes('% Match')`),
-      "Alice sees BOTH Alice's and Bob's prompts, Match %, and AI Critic comments!");
-    assert(await g2.eval(`document.body.innerText.includes('Alice') && document.body.innerText.includes('Bob') && document.body.innerText.includes('% Match')`),
-      "Bob sees BOTH Alice's and Bob's prompts, Match %, and AI Critic comments!");
+    assert(g1ImagesOk, "Alice's phone renders ALL participants' generated AI images!");
+    assert(g2ImagesOk, "Bob's phone renders ALL participants' generated AI images!");
+    assert(await g1.eval(`document.body.innerText.includes('Alice') && document.body.innerText.includes('Bob') && document.body.innerText.includes('Auto-saved') && document.body.innerText.includes('% Match')`),
+      "Alice sees BOTH Alice's (auto-saved) and Bob's ranked images, prompts, Match %, and AI Critic comments!");
+    assert(await g2.eval(`document.body.innerText.includes('Alice') && document.body.innerText.includes('Bob') && document.body.innerText.includes('golden sunset') && document.body.innerText.includes('% Match')`),
+      "Bob sees BOTH Alice's and Bob's ranked images, prompts, Match %, and AI Critic comments!");
+
+    // Verify single-request image upload endpoint used to share Nano Banana images across all phones
+    const uploadedUrl = await host.eval(`RoomSync.uploadImage(document.querySelector('.clone-card img').src)`);
+    assert(uploadedUrl && uploadedUrl.startsWith('/api/img/'), `RoomSync.uploadImage() uploaded image in 1 HTTP request -> ${uploadedUrl}`);
+    const fetchRes = await fetch(`${BASE_URL}${uploadedUrl}`);
+    assert(fetchRes.ok && (fetchRes.headers.get('content-type') || '').startsWith('image/'), `Uploaded image served cleanly over HTTP (${fetchRes.status}, ${fetchRes.headers.get('content-type')})`);
 
     // 4. Back Arrow & Admin Passcode Lock QA
     console.log('\n4️⃣  Testing Back Arrow Navigation & Admin Passcode (2026)...');

@@ -187,14 +187,14 @@ const RoomSync = (() => {
     } else if (mode === 'cloud' && roomCode) {
       const topic = topicName(roomCode);
       const bodyStr = JSON.stringify(msg);
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await fetch(`https://ntfy.sh/${topic}`, {
             method: 'POST',
             body: bodyStr,
           });
           if (res.ok) break;
-          if (res.status === 429) await new Promise(r => setTimeout(r, 850));
+          if (res.status === 429) await new Promise(r => setTimeout(r, 900 * (attempt + 1)));
           else break;
         } catch (_) { break; }
       }
@@ -202,7 +202,89 @@ const RoomSync = (() => {
     return msg;
   }
 
-  // Safely send a compressed JPEG dataUrl across 4KB-limited relays by chunking
+  function dataUrlToBlob(dataUrl) {
+    const parts = String(dataUrl).split(',');
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const bstr = atob(parts[1] || '');
+    const u8 = new Uint8Array(bstr.length);
+    for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+    return new Blob([u8], { type: mime });
+  }
+
+  // Upload a high-res JPEG in ONE single HTTP request and return a direct HTTPS/LAN URL shareable with all 10+ phones!
+  async function uploadImage(dataUrl) {
+    if (!dataUrl || !roomCode) return null;
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      if (mode === 'lan') {
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': blob.type },
+          body: blob,
+        });
+        if (res.ok) {
+          const j = await res.json();
+          if (j && j.url) return j.url;
+        }
+      } else if (mode === 'cloud') {
+        const mediaTopic = topicName(roomCode) + '_media';
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=art.jpg`, {
+            method: 'POST',
+            headers: { 'Content-Type': blob.type },
+            body: blob,
+          });
+          if (res.ok) {
+            const j = await res.json();
+            if (j?.attachment?.url) return j.attachment.url;
+            break;
+          }
+          if (res.status === 429) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          else break;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // Upload an atomic JSON payload (e.g., all 10+ ranked Prompt Clone results + Nano Banana image URLs) in ONE request!
+  async function uploadJSON(obj, filename = 'results.json') {
+    if (!obj || !roomCode) return null;
+    try {
+      const bodyStr = JSON.stringify(obj);
+      if (mode === 'lan') {
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: bodyStr,
+        });
+        if (res.ok) {
+          const j = await res.json();
+          if (j && j.url) return j.url;
+        }
+      } else if (mode === 'cloud') {
+        const mediaTopic = topicName(roomCode) + '_media';
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=${encodeURIComponent(filename)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: bodyStr,
+          });
+          if (res.ok) {
+            const j = await res.json();
+            if (j?.attachment?.url) return j.attachment.url;
+            break;
+          }
+          if (res.status === 429) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          else break;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // Fallback chunked transfer if direct upload unavailable
   async function sendImage(imgKey, dataUrl) {
     if (!imgKey || !dataUrl) return;
     const CHUNK_SIZE = 2200;
@@ -250,6 +332,8 @@ const RoomSync = (() => {
     disconnect,
     pollNow,
     send,
+    uploadImage,
+    uploadJSON,
     sendImage,
     onMessage,
     getJoinUrl,

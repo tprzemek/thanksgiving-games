@@ -144,7 +144,7 @@ const App = (() => {
   function isMidRound() {
     if (!currentGameKey) return false;
     const p = lastHostBroadcast.phase;
-    return ['writing', 'pass_input', 'defend', 'prompt', 'guess', 'live', 'reveal', 'trivia', 'pitch', 'chain'].includes(p);
+    return ['writing', 'collecting', 'pass_input', 'defend', 'prompt', 'guess', 'live', 'reveal', 'trivia', 'pitch', 'chain'].includes(p);
   }
 
   function updateGameNav() {
@@ -991,6 +991,7 @@ const App = (() => {
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
+    let draftSyncTimer = null;
     let activeBotRound = '';
     let botDraft = '';
     let cachedTargetKey = '';
@@ -998,6 +999,29 @@ const App = (() => {
     const receivedImages = {}; // imgKey -> dataUrl
     const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
     const localGenCache = {}; // prompt -> dataUrl
+
+    function clearDraftSync() {
+      if (draftSyncTimer) { clearTimeout(draftSyncTimer); draftSyncTimer = null; }
+    }
+
+    function scheduleCloneDraftSync(val) {
+      clearDraftSync();
+      if (!me) return;
+      draftSyncTimer = setTimeout(() => {
+        draftSyncTimer = null;
+        if (hostState.game === 'promptClone' && hostState.phase === 'writing') {
+          RoomSync.send({
+            type: 'ACTION',
+            playerId: me.id,
+            playerName: me.name,
+            avatar: me.avatar,
+            ageGroup: me.ageGroup,
+            action: 'CLONE_DRAFT',
+            value: String(val || '').trim(),
+          });
+        }
+      }, 1800);
+    }
 
     function getLocalArt(prompt) {
       const k = prompt || 'turkey';
@@ -1022,11 +1046,12 @@ const App = (() => {
             imgSource: r.src || 'builtin',
             imgUrl: r.url || null,
             imgKey: r.k || null,
+            autoCollected: !!r.auto,
             breakdown: [],
           });
         }
       }
-      // 2. Merge any optional per-item CLONE_RESULT_ITEM messages
+      // 2. Merge any optional per-item CLONE_RESULT_ITEM / CLONE_RESULTS_BATCH messages
       const byRound = cloneResultsByRound[payload.roundId];
       if (byRound) {
         for (const [pid, item] of byRound.entries()) {
@@ -1080,11 +1105,50 @@ const App = (() => {
             <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
             <div class="chip-wrap">
               <span class="tag tag-gold">🎨 ${badge}</span>
+              ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
               ${(r.breakdown || []).map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
             </div>
             <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
           </div>
         </div>`;
+    }
+
+    const fetchedResultsUrls = new Set();
+
+    async function fetchAtomicResults(roundId, url) {
+      if (!url || !roundId || fetchedResultsUrls.has(url)) return;
+      fetchedResultsUrls.add(url);
+      try {
+        const res = await fetch(url);
+        if (!res.ok) { fetchedResultsUrls.delete(url); return; }
+        const data = await res.json();
+        if (data && Array.isArray(data.items)) {
+          if (!cloneResultsByRound[roundId]) cloneResultsByRound[roundId] = new Map();
+          for (const r of data.items) {
+            cloneResultsByRound[roundId].set(r.id, {
+              rank: r.rk,
+              playerId: r.id,
+              playerName: r.n,
+              avatar: r.av || '🦃',
+              prompt: r.p || '',
+              score: r.s,
+              pointsAwarded: r.pts,
+              comment: r.c || '',
+              imgSource: r.src || 'builtin',
+              imgUrl: r.url || null,
+              imgKey: r.k || null,
+              autoCollected: !!r.auto,
+              breakdown: Array.isArray(r.bd) ? r.bd : [],
+            });
+          }
+          if (hostState.game === 'promptClone' && hostState.phase === 'results') {
+            lastViewKey = '';
+            renderPhone();
+          }
+        }
+      } catch (_) {
+        fetchedResultsUrls.delete(url);
+      }
     }
 
     RoomSync.connect(roomCode);
@@ -1095,6 +1159,9 @@ const App = (() => {
     RoomSync.onMessage((msg) => {
       if (msg.type === 'HOST_STATE') {
         hostState = msg;
+        if (msg.game === 'promptClone' && msg.phase === 'results' && msg.payload?.resultsUrl) {
+          fetchAtomicResults(msg.payload.roundId, msg.payload.resultsUrl);
+        }
         renderPhone();
       } else if (msg.type === 'CLONE_RESULTS_BATCH' && msg.roundId && Array.isArray(msg.items)) {
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
@@ -1111,6 +1178,7 @@ const App = (() => {
             imgSource: r.src || 'builtin',
             imgUrl: r.url || null,
             imgKey: r.k || null,
+            autoCollected: !!r.auto,
             breakdown: [],
           });
         }
@@ -1216,6 +1284,7 @@ const App = (() => {
 
       // Reset draft cleanly only when a genuinely new round begins
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
+        clearDraftSync();
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
         mySubmittedClonePrompt = '';
@@ -1228,6 +1297,28 @@ const App = (() => {
       const cloneAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === cloneRoundKey;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
       const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
+
+      // If time just ran out (collecting phase), grab whatever is currently typed in the box BEFORE DOM is replaced!
+      if (game === 'promptClone' && phase === 'collecting' && !cloneAlready) {
+        const liveVal = (document.getElementById('p-clone-in')?.value ?? cloneDraft).trim();
+        if (liveVal) {
+          clearDraftSync();
+          submittedKey = cloneRoundKey;
+          mySubmittedClonePrompt = liveVal;
+          cloneDraft = '';
+          SoundFX.ding();
+          RoomSync.send({
+            type: 'ACTION',
+            playerId: me.id,
+            playerName: me.name,
+            avatar: me.avatar,
+            ageGroup: me.ageGroup,
+            action: 'SUBMIT_CLONE_PROMPT',
+            value: liveVal,
+            autoCollected: true,
+          });
+        }
+      }
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
@@ -1258,11 +1349,11 @@ const App = (() => {
             <div style="font-size:2.4rem;">🔒🎨</div>
             <h2 style="margin:0;">Prompt Locked In!</h2>
             ${myPreviewUrl ? `
-              <p class="xs muted" style="margin:0;">Instant preview of what your prompt drew (full gallery &amp; scores appear when Host finishes grading!):</p>
+              <p class="xs muted" style="margin:0;">Instant preview while everyone finishes (everyone's real AI images &amp; rankings appear here automatically!):</p>
               <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
               <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(mySubmittedClonePrompt)}"</em></p>
             ` : `
-              <p class="small muted">Waiting for everyone else—your AI image &amp; full results gallery will appear right here automatically!</p>
+              <p class="small muted">Waiting for everyone else—everyone's AI images &amp; rankings will appear right here automatically!</p>
               <div id="phone-target-slot">${imgHtml}</div>
             `}
           </div>` : `
@@ -1280,6 +1371,19 @@ const App = (() => {
                 `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
             </div>
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
+            <p class="xs muted center" style="margin:0;">⏱️ Don't worry — whatever you typed auto-submits when time runs out!</p>
+          </div>`;
+      } else if (game === 'promptClone' && phase === 'collecting') {
+        body = `
+          <div class="card center stack" style="padding:36px 18px;">
+            <div style="font-size:3rem;">⏱️📥</div>
+            <h2 style="margin:0;">Time's Up! Auto-Collecting Prompts...</h2>
+            ${mySubmittedClonePrompt ? `
+              <p class="small" style="margin:0;color:var(--sage);font-weight:700;">✅ Your typed prompt was automatically saved!</p>
+              <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(mySubmittedClonePrompt)}"</em></p>
+            ` : `
+              <p class="small muted" style="margin:0;">Gathering everyone's prompts before AI generates all pictures...</p>
+            `}
           </div>`;
       } else if (game === 'promptClone' && phase === 'grading') {
         body = `
@@ -1293,37 +1397,33 @@ const App = (() => {
         const winner = items[0] || null;
         const myItem = items.find(r => r.playerId === me.id);
         const imgHtml = getPhoneCloneImageHtml(payload);
+        const expectedTotal = Math.max(items.length, Number(payload.totalResults) || 0);
         body = `
           <div class="stack fade-in">
             ${winner ? `
               <div class="card center stack-sm" style="border:2px solid var(--gold);">
                 <div style="font-size:2.2rem;">👑🏆</div>
                 <h2 style="margin:0;">Winner: ${winner.avatar || '🦃'} ${esc(winner.playerName)} (${winner.score}% Match!)</h2>
-                <p class="xs muted" style="margin:0;">Scroll down to see everyone's AI images, prompts, and scores!</p>
+                ${myItem ? `<span class="tag tag-new">You placed #${myItem.rank + 1} · ${myItem.score}% Match (+${myItem.pointsAwarded} pts)</span>` : ''}
+                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; scores ranked below!</p>
               </div>
             ` : ''}
 
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">${items.length} Participants</span>
+                <span class="tag tag-gold">${expectedTotal} Participants</span>
               </div>
               ${imgHtml}
               ${payload.originalPrompt ? `<p class="xs muted" style="margin:0;">Secret prompt: <strong>"${esc(payload.originalPrompt)}"</strong></p>` : ''}
             </div>
 
-            ${myItem ? `
-              <div class="stack-sm">
-                <strong class="small">✨ What AI Created From Your Prompt:</strong>
-                ${renderCloneResultCard(myItem, myItem.rank, true)}
-              </div>
-            ` : ''}
-
             <div class="stack-sm">
-              <strong class="small">🏆 Full Family Results Gallery (${items.length}):</strong>
+              <strong class="small">🏆 All Participants Ranked (#1 → #${expectedTotal || items.length}):</strong>
               ${items.length
                 ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id)).join('')
                 : `<div class="card center small muted">Loading everyone's AI creations... Tap 🔄 Sync above if needed!</div>`}
+              ${expectedTotal > items.length ? `<div class="card-warm center xs muted">⏳ Syncing remaining participants (${items.length}/${expectedTotal})…</div>` : ''}
             </div>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -1416,16 +1516,21 @@ const App = (() => {
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');
       if (pCloneIn) {
-        pCloneIn.oninput = (e) => { cloneDraft = e.target.value; };
+        pCloneIn.oninput = (e) => {
+          cloneDraft = e.target.value;
+          scheduleCloneDraftSync(cloneDraft);
+        };
         app.querySelectorAll('[data-pchip]').forEach(ch => {
           ch.onclick = () => {
             pCloneIn.value = (pCloneIn.value.trim() ? pCloneIn.value.trim() + ' ' : '') + ch.dataset.pchip;
             cloneDraft = pCloneIn.value;
+            scheduleCloneDraftSync(cloneDraft);
           };
         });
         document.getElementById('p-clone-send').onclick = () => {
           const val = pCloneIn.value.trim();
           if (!val) return;
+          clearDraftSync();
           submittedKey = cloneRoundKey;
           mySubmittedClonePrompt = val;
           cloneDraft = '';

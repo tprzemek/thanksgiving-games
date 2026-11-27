@@ -27,23 +27,27 @@ const Games = (() => {
   // =========================================================================
   function createPromptClone(App) {
     let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length); // All 12 rounds have real studio AI target artworks!
-    let phase = 'lobby'; // lobby | writing | pass_cover | pass_input | grading | results
+    let phase = 'lobby'; // lobby | writing | collecting | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;
     let timer = null;
+    let collectTimer = null;
     let target = GAME_DATA.promptClone.challenges[idx];
     let roundId = 0;
     let customTargetImg = null; // Optional uploaded/custom image dataURL
     let customTargetThumb = null; // Compressed thumbnail for phone sync
+    let customTargetUrl = null; // Uploaded direct URL for phone sync
     let customTargetDesc = '';
     let targetArt = null; // { dataUrl, canvas, parsed }
-    let submissions = {}; // playerId -> { text, ts }
+    let submissions = {}; // playerId -> { text, playerName, avatar, ts }
+    let drafts = {};      // playerId -> { text, playerName, avatar, ts } (auto-saved while typing!)
     let passIdx = 0;
     let gradedResults = [];
     let gradingStatus = '';
 
     function cleanup() {
       if (timer) { clearInterval(timer); timer = null; }
+      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
       SoundFX.stopSpeech();
     }
 
@@ -55,7 +59,7 @@ const Games = (() => {
       }
     }
 
-    function makeThumb(dataUrl, maxW = 400, quality = 0.7) {
+    function makeThumb(dataUrl, maxW = 640, quality = 0.78) {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -93,21 +97,25 @@ const Games = (() => {
         c: String(r.comment || '').slice(0, 80),
         src: r.imgSource || 'builtin',
       };
-      if (r.aiUrl) item.url = r.aiUrl;
-      if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
+      const directUrl = r.sharedUrl || r.aiUrl || null;
+      if (directUrl) item.url = directUrl;
+      else if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
+      if (r.autoCollected) item.auto = 1;
       return item;
     }
 
+    let resultsUrl = null; // Atomic hosted JSON containing ALL ranked participants + direct image URLs
+
     function broadcastPhoneState() {
-      // Embed results directly in HOST_STATE only if <= 4 players (keeps packet safely < 1.8KB for ntfy.sh!)
-      const inlineResults = (phase === 'results' && gradedResults.length <= 4)
+      // Embed results directly in HOST_STATE only if <= 3 players (keeps packet safely < 1.6KB for ntfy.sh!)
+      const inlineResults = (phase === 'results' && gradedResults.length <= 3)
         ? gradedResults.map((r, i) => toCompactResult(r, i))
         : null;
 
       App.broadcastHostState('promptClone', phase, {
         roundId,
         challengeId: customTargetImg ? null : target.id,
-        asset: customTargetImg ? null : (target.asset || null),
+        asset: customTargetImg ? (customTargetUrl || null) : (target.asset || null),
         hasCustomTarget: !!customTargetImg,
         title: customTargetImg ? 'Custom Target Image' : target.title,
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
@@ -117,72 +125,104 @@ const Games = (() => {
         gradingStatus,
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
         totalResults: phase === 'results' ? gradedResults.length : 0,
+        resultsUrl: phase === 'results' ? resultsUrl : null,
         results: inlineResults,
       });
     }
 
     async function broadcastResultsToPhones() {
-      // Always stream results in tiny batches of 3 (< 1.1KB each) so even 10-20+ players pass ntfy.sh 4KB limit reliably!
-      const BATCH = 3;
-      const compactAll = gradedResults.map((r, i) => toCompactResult(r, i));
-      for (let i = 0; i < compactAll.length; i += BATCH) {
-        await RoomSync.send({
-          type: 'CLONE_RESULTS_BATCH',
-          roundId,
-          items: compactAll.slice(i, i + BATCH),
-        });
-        if (RoomSync.getMode() === 'cloud' && i + BATCH < compactAll.length) {
-          await new Promise(r => setTimeout(r, 260));
+      // If atomic resultsUrl upload succeeded, phones fetch ALL ranked results in 1 GET request from HOST_STATE!
+      // Only fall back to CLONE_RESULTS_BATCH streaming if resultsUrl wasn't available (e.g. BroadcastChannel).
+      if (!resultsUrl) {
+        const BATCH = 3;
+        const compactAll = gradedResults.map((r, i) => toCompactResult(r, i));
+        for (let i = 0; i < compactAll.length; i += BATCH) {
+          await RoomSync.send({
+            type: 'CLONE_RESULTS_BATCH',
+            roundId,
+            items: compactAll.slice(i, i + BATCH),
+          });
+          if (RoomSync.getMode() === 'cloud' && i + BATCH < compactAll.length) {
+            await new Promise(r => setTimeout(r, 320));
+          }
         }
       }
-      // Stream any real base64 AI images (Gemini/OpenAI) via chunked transfer
+      // Only chunk fallback images that didn't get a direct sharedUrl
       for (let i = 0; i < gradedResults.length; i++) {
         const r = gradedResults[i];
-        if (r.aiDataUrl) {
+        if (r.aiDataUrl && !r.sharedUrl && !r.aiUrl) {
           const imgKey = `res_${roundId}_${r.player.id}`;
-          const thumb = await makeThumb(r.aiDataUrl);
+          const thumb = await makeThumb(r.aiDataUrl, 340, 0.62);
           if (thumb) await RoomSync.sendImage(imgKey, thumb);
         }
       }
     }
 
+    function ensureGuestPlayer(msg) {
+      let p = App.getPlayers().find(x => x.id === msg.playerId);
+      if (!p) {
+        p = App.addPlayer({
+          id: msg.playerId,
+          name: msg.playerName || 'Guest',
+          ageGroup: msg.ageGroup || 'adult',
+          avatar: msg.avatar || '🦃',
+          remote: true,
+        });
+      }
+      return p;
+    }
+
     function onPhoneAction(msg) {
-      if (phase !== 'writing') return;
-      if (msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.value) {
-        // Ensure submitting guest always exists on the Host roster even if JOIN arrived before a Host refresh
-        let p = App.getPlayers().find(x => x.id === msg.playerId);
-        if (!p) {
-          p = App.addPlayer({
-            id: msg.playerId,
-            name: msg.playerName || 'Guest',
-            ageGroup: msg.ageGroup || 'adult',
-            avatar: msg.avatar || '🦃',
-            remote: true,
-          });
-        }
-        submissions[msg.playerId] = {
-          text: String(msg.value).trim(),
+      if (phase !== 'writing' && phase !== 'collecting') return;
+      if (msg.action === 'CLONE_DRAFT' && msg.playerId && typeof msg.value === 'string') {
+        const clean = msg.value.trim();
+        if (!clean) { delete drafts[msg.playerId]; return; }
+        const p = ensureGuestPlayer(msg);
+        drafts[msg.playerId] = {
+          text: clean,
           playerName: p ? p.name : (msg.playerName || 'Guest'),
           avatar: p ? p.avatar : (msg.avatar || '🦃'),
           ts: Date.now(),
         };
-        SoundFX.pop();
-        broadcastPhoneState();
-        render();
+        if (phase === 'writing') render();
+        return;
+      }
+      if (msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.value) {
+        const clean = String(msg.value).trim();
+        if (!clean) return;
+        const p = ensureGuestPlayer(msg);
+        submissions[msg.playerId] = {
+          text: clean,
+          playerName: p ? p.name : (msg.playerName || 'Guest'),
+          avatar: p ? p.avatar : (msg.avatar || '🦃'),
+          autoCollected: !!msg.autoCollected,
+          ts: Date.now(),
+        };
+        delete drafts[msg.playerId];
+        if (phase === 'writing') {
+          SoundFX.pop();
+          broadcastPhoneState();
+          render();
+        }
       }
     }
 
-    function startWriting() {
+    async function startWriting() {
       buildTarget();
       roundId = Date.now();
       submissions = {};
+      drafts = {};
       gradedResults = [];
+      resultsUrl = null;
       timeLeft = durationSec;
       phase = 'writing';
+      if (customTargetImg && customTargetThumb && !customTargetUrl) {
+        customTargetUrl = await RoomSync.uploadImage(customTargetThumb);
+      }
       SoundFX.ding();
       SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to write an AI prompt that recreates it as closely as possible!`);
       broadcastPhoneState();
-      if (customTargetImg && customTargetThumb) {
+      if (customTargetImg && customTargetThumb && !customTargetUrl) {
         RoomSync.sendImage(`target_${roundId}`, customTargetThumb);
       }
       if (timer) clearInterval(timer);
@@ -191,7 +231,7 @@ const Games = (() => {
         if (timeLeft <= 10 && timeLeft > 0) SoundFX.tick(0.7);
         if (timeLeft <= 0) {
           clearInterval(timer); timer = null;
-          gradeAll();
+          beginCollectAndGrade();
           return;
         }
         const el = document.getElementById('clone-timer');
@@ -201,6 +241,36 @@ const Games = (() => {
         }
       }, 1000);
       render();
+    }
+
+    // Auto-collect every participant's typed draft (even if they didn't press Lock In!) before grading
+    function beginCollectAndGrade() {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (collectTimer) { clearTimeout(collectTimer); collectTimer = null; }
+      phase = 'collecting';
+      gradingStatus = '⏱️ Time\'s up! Auto-collecting everyone\'s typed prompts (even if they didn\'t tap Lock In)...';
+      SoundFX.buzzer();
+      broadcastPhoneState();
+      render();
+
+      collectTimer = setTimeout(() => {
+        collectTimer = null;
+        // Merge any auto-saved drafts that weren't explicitly locked in!
+        for (const [pid, d] of Object.entries(drafts)) {
+          if (!submissions[pid] && d && d.text) {
+            submissions[pid] = { ...d, autoCollected: true };
+          }
+        }
+        const total = Object.values(submissions).filter(s => s && s.text).length;
+        if (total === 0) {
+          phase = 'writing';
+          gradingStatus = 'No prompts typed yet — type at least one prompt to generate images!';
+          broadcastPhoneState();
+          render();
+          return;
+        }
+        gradeAll();
+      }, 2000);
     }
 
     async function assetToThumbDataUrl(assetPath) {
@@ -258,7 +328,16 @@ const Games = (() => {
         const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
         if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
 
-        // 2. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
+        // 2. Upload crisp JPEG of any generated AI image in 1 single HTTP request so ALL 10+ phones see EVERY player's real Nano Banana image!
+        let sharedUrl = aiImg.url || null;
+        if (!sharedUrl && aiImg.dataUrl) {
+          const hiRes = await makeThumb(aiImg.dataUrl, 640, 0.78);
+          if (hiRes) {
+            sharedUrl = await RoomSync.uploadImage(hiRes);
+          }
+        }
+
+        // 3. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
         let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
         if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
           const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
@@ -284,7 +363,9 @@ const Games = (() => {
           dataUrl: gen.dataUrl,
           aiUrl: aiImg.url,
           aiDataUrl: aiImg.dataUrl,
+          sharedUrl,
           imgSource: aiImg.source,
+          autoCollected: !!sub.autoCollected,
           ...grade,
         };
 
@@ -315,6 +396,18 @@ const Games = (() => {
         r.pointsAwarded = pts;
         App.addScore(r.player.id, pts);
       });
+
+      // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
+      const fullPayload = {
+        roundId,
+        items: results.map((r, i) => ({
+          ...toCompactResult(r, i),
+          p: r.prompt || '',
+          c: r.comment || '',
+          bd: (r.breakdown || []).slice(0, 6),
+        })),
+      };
+      resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}.json`);
 
       phase = 'results';
       gradingStatus = '';
@@ -384,6 +477,7 @@ const Games = (() => {
         document.getElementById('clone-next-scene').onclick = () => {
           customTargetImg = null;
           customTargetThumb = null;
+          customTargetUrl = null;
           idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
           target = GAME_DATA.promptClone.challenges[idx];
           buildTarget();
@@ -399,6 +493,7 @@ const Games = (() => {
           const reader = new FileReader();
           reader.onload = async () => {
             customTargetImg = reader.result;
+            customTargetUrl = null;
             buildTarget();
             customTargetThumb = await makeThumb(customTargetImg);
             render();
@@ -412,29 +507,39 @@ const Games = (() => {
 
       if (phase === 'writing') {
         const subCount = Object.keys(submissions).length;
+        const draftOnlyCount = Object.keys(drafts).filter(pid => !submissions[pid] && drafts[pid]?.text).length;
+        const readyCount = subCount + draftOnlyCount;
         const missing = players.filter(p => !submissions[p.id]);
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
               <div>
                 <h2>🔍 Recreate This Image!</h2>
-                <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)}</p>
+                <p class="muted small" style="margin:0;">Hint: ${esc(target.tips)} · <em>Typed drafts auto-submit when time runs out!</em></p>
               </div>
               <div class="timer-box ${timeLeft <= 15 ? 'urgent' : ''}" id="clone-timer">${fmtTime(timeLeft)}</div>
             </div>
 
             <div class="art-frame" style="max-width:560px;">${targetImgHtml}</div>
 
+            ${gradingStatus ? `<div class="card-warm small center" style="color:var(--pumpkin);font-weight:600;">${esc(gradingStatus)}</div>` : ''}
+
             <div class="card stack">
               <div class="row-between">
-                <h3>Submissions (${subCount}/${players.length})</h3>
+                <h3>Submissions (${subCount}/${players.length}${draftOnlyCount ? ` · ${draftOnlyCount} typing` : ''})</h3>
                 <button class="btn btn-sm" id="clone-qr-open">📱 Join via QR</button>
               </div>
               <div class="roster-bar">
                 ${players.map(p => {
                   const done = !!submissions[p.id];
-                  return `<span class="player-chip" style="${done ? 'background:var(--sage-soft);border-color:var(--sage);' : ''}">
-                    ${p.avatar} ${esc(p.name)} <strong>${done ? '✓ Locked In' : '…'}</strong>
+                  const typing = !done && !!drafts[p.id]?.text;
+                  const style = done
+                    ? 'background:var(--sage-soft);border-color:var(--sage);'
+                    : typing
+                    ? 'background:var(--gold-soft);border-color:var(--gold);'
+                    : '';
+                  return `<span class="player-chip" style="${style}">
+                    ${p.avatar} ${esc(p.name)} <strong>${done ? '✓ Locked In' : typing ? '✍️ Typing…' : '…'}</strong>
                   </span>`;
                 }).join('')}
               </div>
@@ -444,7 +549,7 @@ const Games = (() => {
                 <strong class="small">Pass-the-Phone / Single Device Entry:</strong>
                 <div class="row">
                   <select class="select" id="clone-local-player" style="max-width:210px;">
-                    ${players.map(p => `<option value="${p.id}" ${!submissions[p.id] ? '' : ''}>${p.avatar} ${esc(p.name)} ${submissions[p.id] ? '(Update)' : ''}</option>`).join('')}
+                    ${players.map(p => `<option value="${p.id}">${p.avatar} ${esc(p.name)} ${submissions[p.id] ? '(Update)' : drafts[p.id]?.text ? '(Draft)' : ''}</option>`).join('')}
                   </select>
                   <button class="btn btn-primary" id="clone-pass-enter">✍️ Type Secret Prompt</button>
                 </div>
@@ -453,8 +558,8 @@ const Games = (() => {
 
             <div class="row-between">
               <button class="btn" id="clone-cancel">← Back</button>
-              <button class="btn btn-success btn-lg" id="clone-grade-now" ${subCount === 0 ? 'disabled' : ''}>
-                ✨ Generate Images & Grade All (${subCount})
+              <button class="btn btn-success btn-lg" id="clone-grade-now">
+                ✨ Collect All &amp; Generate Images (${readyCount || subCount})
               </button>
             </div>
           </div>`;
@@ -466,8 +571,8 @@ const Games = (() => {
         }
 
         document.getElementById('clone-qr-open').onclick = () => App.openQRModal();
-        document.getElementById('clone-cancel').onclick = () => { cleanup(); phase = 'lobby'; broadcastPhoneState(); render(); };
-        document.getElementById('clone-grade-now').onclick = gradeAll;
+        document.getElementById('clone-cancel').onclick = () => { cleanup(); gradingStatus = ''; phase = 'lobby'; broadcastPhoneState(); render(); };
+        document.getElementById('clone-grade-now').onclick = beginCollectAndGrade;
         document.getElementById('clone-pass-enter').onclick = () => {
           const pid = document.getElementById('clone-local-player').value;
           passIdx = Math.max(0, players.findIndex(p => p.id === pid));
@@ -479,7 +584,7 @@ const Games = (() => {
 
       if (phase === 'pass_input') {
         const p = players[passIdx] || players[0];
-        const existing = submissions[p.id]?.text || '';
+        const existing = submissions[p.id]?.text || drafts[p.id]?.text || '';
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
@@ -503,9 +608,16 @@ const Games = (() => {
           </div>`;
 
         const box = document.getElementById('clone-prompt-box');
+        const saveLocalDraft = () => {
+          const v = box.value.trim();
+          if (v) drafts[p.id] = { text: v, playerName: p.name, avatar: p.avatar, ts: Date.now() };
+          else delete drafts[p.id];
+        };
+        box.oninput = saveLocalDraft;
         root.querySelectorAll('[data-chip]').forEach(ch => {
           ch.onclick = () => {
             box.value = (box.value.trim() ? box.value.trim() + ' ' : '') + ch.dataset.chip;
+            saveLocalDraft();
             box.focus();
           };
         });
@@ -513,12 +625,23 @@ const Games = (() => {
         document.getElementById('clone-lock-in').onclick = () => {
           const val = box.value.trim();
           if (!val) return;
-          submissions[p.id] = { text: val, ts: Date.now() };
+          submissions[p.id] = { text: val, playerName: p.name, avatar: p.avatar, ts: Date.now() };
+          delete drafts[p.id];
           SoundFX.pop();
           phase = 'writing';
           broadcastPhoneState();
           render();
         };
+        return;
+      }
+
+      if (phase === 'collecting') {
+        root.innerHTML = `
+          <div class="card center stack" style="padding:48px 20px;">
+            <div style="font-size:3.2rem;">⏱️📥</div>
+            <h2>Time's Up! Auto-Collecting All Prompts...</h2>
+            <p class="muted">${esc(gradingStatus || 'Grabbing every participant\'s typed draft — even if they didn\'t press Lock In!')}</p>
+          </div>`;
         return;
       }
 
@@ -549,7 +672,7 @@ const Games = (() => {
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">Sent to every participant's phone!</span>
+                <span class="tag tag-gold">All ${gradedResults.length} ranked results sent to every phone!</span>
               </div>
               <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             </div>
@@ -562,7 +685,7 @@ const Games = (() => {
 
             <div class="clone-gallery">
               ${gradedResults.map((r, i) => {
-                const imgSrc = r.aiDataUrl || r.aiUrl || r.dataUrl;
+                const imgSrc = r.aiDataUrl || r.sharedUrl || r.aiUrl || r.dataUrl;
                 const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
                 return `
                 <div class="clone-card ${i === 0 ? 'winner' : ''}">
@@ -578,6 +701,7 @@ const Games = (() => {
                     <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
                     <div class="chip-wrap">
                       <span class="tag tag-gold">🎨 ${badge}</span>
+                      ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
                       ${r.breakdown.map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
                     </div>
                     <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
@@ -596,6 +720,9 @@ const Games = (() => {
         document.getElementById('clone-play-again').onclick = () => {
           customTargetImg = null;
           customTargetThumb = null;
+          customTargetUrl = null;
+          drafts = {};
+          gradingStatus = '';
           idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
           target = GAME_DATA.promptClone.challenges[idx];
           buildTarget();

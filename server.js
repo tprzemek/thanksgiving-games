@@ -24,6 +24,8 @@ function getLanIp() {
 const rooms = new Map();
 // roomCode -> latest HOST_STATE message
 const roomLatestState = new Map();
+// imgId -> { buf: Buffer, type: string }
+const uploadedImages = new Map();
 
 function getClients(code) {
   const k = code.toUpperCase();
@@ -40,6 +42,40 @@ const server = http.createServer((req, res) => {
     const ip = getLanIp();
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ ok: true, lanIp: ip, port: PORT, lanUrl: `http://${ip}:${PORT}` }));
+    return;
+  }
+
+  // API: upload binary image for instant sharing across LAN phones
+  if (p === '/api/upload' && (req.method === 'POST' || req.method === 'PUT')) {
+    const chunks = [];
+    let total = 0;
+    req.on('data', (c) => {
+      total += c.length;
+      if (total > 4_000_000) { req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      const ct = req.headers['content-type'] || 'image/jpeg';
+      const ext = ct.includes('json') ? '.json' : '.jpg';
+      const id = 'img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7) + ext;
+      uploadedImages.set(id, { buf: Buffer.concat(chunks), type: ct });
+      if (uploadedImages.size > 80) {
+        const first = uploadedImages.keys().next().value;
+        uploadedImages.delete(first);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, url: `/api/img/${id}` }));
+    });
+    return;
+  }
+
+  // API: serve uploaded image
+  const imgMatch = p.match(/^\/api\/img\/([a-zA-Z0-9._-]+)$/);
+  if (imgMatch && req.method === 'GET') {
+    const item = uploadedImages.get(imgMatch[1]);
+    if (!item) { res.writeHead(404); res.end('Not found'); return; }
+    res.writeHead(200, { 'Content-Type': item.type, 'Cache-Control': 'public, max-age=3600' });
+    res.end(item.buf);
     return;
   }
 

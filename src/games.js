@@ -55,17 +55,16 @@ const Games = (() => {
       }
     }
 
-    function makeThumb(dataUrl) {
+    function makeThumb(dataUrl, maxW = 400, quality = 0.7) {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
           const c = document.createElement('canvas');
-          const maxW = 320;
           const scale = Math.min(1, maxW / (img.width || maxW));
-          c.width = Math.max(1, Math.round((img.width || 320) * scale));
-          c.height = Math.max(1, Math.round((img.height || 220) * scale));
+          c.width = Math.max(1, Math.round((img.width || maxW) * scale));
+          c.height = Math.max(1, Math.round((img.height || Math.round(maxW * 0.72)) * scale));
           c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-          resolve(c.toDataURL('image/jpeg', 0.62));
+          resolve(c.toDataURL('image/jpeg', quality));
         };
         img.onerror = () => resolve(null);
         img.src = dataUrl;
@@ -204,41 +203,71 @@ const Games = (() => {
       render();
     }
 
+    async function assetToThumbDataUrl(assetPath) {
+      if (!assetPath) return null;
+      try {
+        const res = await fetch(assetPath);
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        const raw = await new Promise((resolve) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = () => resolve(null);
+          fr.readAsDataURL(blob);
+        });
+        return raw ? await makeThumb(raw, 420, 0.72) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
     async function gradeAll() {
       if (timer) { clearInterval(timer); timer = null; }
       phase = 'grading';
-      gradingStatus = 'Preparing AI art generation & resemblance grading...';
+      gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
       broadcastPhoneState();
       render();
 
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
       const players = App.getPlayers();
-      // Grade EVERY submission received — never drop any participant!
       const entries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
-      const results = [];
 
-      for (let i = 0; i < entries.length; i++) {
+      // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
+      let targetVisionDataUrl = null;
+      if (liveCfg.provider === 'gemini' && liveCfg.apiKey) {
+        targetVisionDataUrl = customTargetImg
+          ? await makeThumb(customTargetImg, 420, 0.72)
+          : await assetToThumbDataUrl(target.asset);
+      }
+
+      const results = new Array(entries.length);
+      let completedCount = 0;
+      let aiWarning = '';
+
+      async function processOne(i) {
         const [pid, sub] = entries[i];
         const p = players.find(x => x.id === pid) || {
           id: pid,
           name: sub.playerName || 'Player',
           avatar: sub.avatar || '🦃',
         };
-        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${entries.length})...`;
-        broadcastPhoneState();
-        const stEl = document.getElementById('clone-grading-status');
-        if (stEl) stEl.textContent = gradingStatus;
-
-        // 1. Always create instant built-in artwork as pixel baseline & fallback
         const gen = AIArt.renderDataURL(sub.text, 440, 300);
 
-        // 2. Generate real AI image via OpenAI / Gemini / Pollinations if configured
+        // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
         const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
+        if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
 
-        // 3. Grade resemblance (built-in feature + visual comparison, upgraded with LLM if configured)
+        // 2. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
         let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
-        if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+        if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
+          const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
+          const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
+          if (vis && typeof vis.score === 'number') {
+            grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
+            if (vis.comment) grade.comment = vis.comment;
+          }
+        } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
           const llm = await LiveAI.askJSON(
             'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
             `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
@@ -249,7 +278,7 @@ const Games = (() => {
           }
         }
 
-        results.push({
+        results[i] = {
           player: p,
           prompt: sub.text,
           dataUrl: gen.dataUrl,
@@ -257,13 +286,29 @@ const Games = (() => {
           aiDataUrl: aiImg.dataUrl,
           imgSource: aiImg.source,
           ...grade,
-        });
+        };
+
+        completedCount++;
+        gradingStatus = `🍌 Generated ${completedCount}/${entries.length} AI images (${p.name} done!)...`;
+        broadcastPhoneState();
+        const stEl = document.getElementById('clone-grading-status');
+        if (stEl) stEl.textContent = gradingStatus;
+      }
+
+      // Run 3 in parallel so 10 Nano Banana images complete ~3x faster!
+      const CONCURRENCY = 3;
+      for (let start = 0; start < entries.length; start += CONCURRENCY) {
+        const slice = [];
+        for (let j = start; j < Math.min(entries.length, start + CONCURRENCY); j++) {
+          slice.push(processOne(j));
+        }
+        await Promise.all(slice);
       }
 
       results.sort((a, b) => b.score - a.score);
       gradedResults = results;
+      gradedResults._warning = aiWarning;
 
-      // Award leaderboard points based on resemblance %
       results.forEach((r, rank) => {
         const bonus = rank === 0 ? 100 : rank === 1 ? 50 : 0;
         const pts = Math.round(r.score * 2) + bonus;
@@ -509,10 +554,16 @@ const Games = (() => {
               <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             </div>
 
+            ${gradedResults._warning ? `
+              <div class="card small" style="border-color:var(--cranberry);color:var(--cranberry);">
+                <strong>⚠️ AI Image Notice:</strong> ${esc(gradedResults._warning)} — fell back to Built-In Instant Artist for this round. Check your key &amp; billing in <strong>⚙️ Settings</strong>!
+              </div>
+            ` : ''}
+
             <div class="clone-gallery">
               ${gradedResults.map((r, i) => {
                 const imgSrc = r.aiDataUrl || r.aiUrl || r.dataUrl;
-                const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+                const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
                 return `
                 <div class="clone-card ${i === 0 ? 'winner' : ''}">
                   <div class="art-frame" style="border:none;border-radius:0;">

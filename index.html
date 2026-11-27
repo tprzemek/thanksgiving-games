@@ -2771,9 +2771,26 @@ const RoomSync = (() => {
   };
 })();
 
-// Optional Real AI Engine (Gemini / OpenAI / Pollinations + Built-In Instant Fallback)
+// Optional Real AI Engine (Google Nano Banana / OpenAI DALL-E 3 / Pollinations + Built-In Fallback)
 const LiveAI = (() => {
   const STORAGE_KEY = 'tg26_ai_settings';
+
+  const BANANA_MODELS = [
+    { id: 'auto', label: '🍌 Auto (Best Available Nano Banana)' },
+    { id: 'gemini-nano-banana-2.1', label: '🍌 Nano Banana 2.1 (Latest Flagship)' },
+    { id: 'gemini-3.1-flash-lite-image', label: '⚡ Nano Banana 2 Lite (Fastest & Cheapest)' },
+    { id: 'gemini-3.1-flash-image', label: '🍌 Nano Banana 2 (Gemini 3.1 Flash Image)' },
+    { id: 'gemini-2.5-flash-image', label: '🍌 Nano Banana 1 (Gemini 2.5 Flash Image)' },
+    { id: 'gemini-3-pro-image', label: '👑 Nano Banana Pro (Highest Quality)' },
+  ];
+
+  const BANANA_AUTO_ORDER = [
+    'gemini-3.1-flash-image',
+    'gemini-nano-banana-2.1',
+    'gemini-3.1-flash-lite-image',
+    'gemini-2.5-flash-image',
+    'gemini-3-pro-image',
+  ];
 
   function loadSettings() {
     try {
@@ -2783,6 +2800,7 @@ const LiveAI = (() => {
         return {
           provider: parsed.provider || 'builtin',
           apiKey: parsed.apiKey || '',
+          bananaModel: parsed.bananaModel || 'auto',
           pollinationsKey: parsed.pollinationsKey || '',
           liveImages: parsed.liveImages !== undefined ? !!parsed.liveImages : false,
         };
@@ -2791,6 +2809,7 @@ const LiveAI = (() => {
     return {
       provider: 'builtin', // 'builtin' | 'gemini' | 'openai'
       apiKey: '',
+      bananaModel: 'auto',
       pollinationsKey: '',
       liveImages: false,
     };
@@ -2803,8 +2822,8 @@ const LiveAI = (() => {
   function hasRealImageAI() {
     const cfg = loadSettings();
     return !!(
-      (cfg.provider === 'openai' && cfg.apiKey) ||
       (cfg.provider === 'gemini' && cfg.apiKey) ||
+      (cfg.provider === 'openai' && cfg.apiKey) ||
       cfg.pollinationsKey ||
       cfg.liveImages
     );
@@ -2812,11 +2831,11 @@ const LiveAI = (() => {
 
   function getActiveImageLabel() {
     const cfg = loadSettings();
+    if (cfg.provider === 'gemini' && cfg.apiKey) return 'Google Nano Banana';
     if (cfg.provider === 'openai' && cfg.apiKey) return 'OpenAI DALL-E 3';
-    if (cfg.provider === 'gemini' && cfg.apiKey) return 'Google Gemini AI Art';
-    if (cfg.pollinationsKey) return 'Pollinations AI (Key)';
-    if (cfg.liveImages) return 'Pollinations AI (Free)';
-    return 'Built-In Instant AI Artist';
+    if (cfg.pollinationsKey) return 'Pollinations AI';
+    if (cfg.liveImages) return 'Pollinations (Free)';
+    return 'Built-In Instant Artist';
   }
 
   async function askJSON(systemPrompt, userPrompt) {
@@ -2824,21 +2843,24 @@ const LiveAI = (() => {
     if (!cfg.apiKey || cfg.provider === 'builtin') return null;
     try {
       if (cfg.provider === 'gemini') {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: `${systemPrompt}\n\n${userPrompt}\n\nRespond with valid JSON only.` }] }],
-              generationConfig: { responseMimeType: 'application/json', temperature: 0.85 },
-            }),
-          }
-        );
-        if (!res.ok) return null;
-        const data = await res.json();
-        const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        return txt ? JSON.parse(txt) : null;
+        for (const model of ['gemini-2.5-flash', 'gemini-2.0-flash']) {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: `${systemPrompt}\n\n${userPrompt}\n\nRespond with valid JSON only.` }] }],
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.85 },
+              }),
+            }
+          );
+          if (!res.ok) continue;
+          const data = await res.json();
+          const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (txt) return JSON.parse(txt);
+        }
+        return null;
       }
       if (cfg.provider === 'openai') {
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -2868,6 +2890,107 @@ const LiveAI = (() => {
     return null;
   }
 
+  // Vision-powered visual resemblance grader comparing Original Target vs Regenerated AI image!
+  async function gradeImagesWithVision(targetDataUrl, playerDataUrl, refPrompt, playerPrompt, playerName) {
+    const cfg = loadSettings();
+    if (!cfg.apiKey || cfg.provider !== 'gemini' || !targetDataUrl || !playerDataUrl) return null;
+    const splitB64 = (du) => {
+      const m = String(du).match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+      return m ? { mimeType: m[1], data: m[2] } : null;
+    };
+    const imgA = splitB64(targetDataUrl);
+    const imgB = splitB64(playerDataUrl);
+    if (!imgA || !imgB) return null;
+    try {
+      for (const model of ['gemini-2.5-flash', 'gemini-2.0-flash']) {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: `You are the witty AI art judge for a family Thanksgiving Prompt Clone game. Image 1 is the ORIGINAL target image. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}". Compare Image 2's visual resemblance to Image 1 (subject, setting, props, colors, composition, art style). Return ONLY valid JSON: {"score": integer 0-100, "comment": "1 funny, specific sentence praising what matched or roasting what went hilariously different"}.` },
+                  { inlineData: imgA },
+                  { inlineData: imgB },
+                ],
+              }],
+              generationConfig: { responseMimeType: 'application/json', temperature: 0.6 },
+            }),
+          }
+        );
+        if (!res.ok) continue;
+        const data = await res.json();
+        const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (txt) return JSON.parse(txt);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  async function callNanoBanana(apiKey, modelId, prompt) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const payloads = [
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseModalities: ['IMAGE'],
+          imageConfig: { aspectRatio: '4:3' },
+        },
+      },
+      {
+        contents: [{ parts: [{ text: `Generate an illustration of: ${prompt}` }] }],
+        generationConfig: {
+          responseModalities: ['TEXT', 'IMAGE'],
+        },
+      },
+    ];
+
+    let lastErr = '';
+    for (const body of payloads) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const errTxt = await res.text().catch(() => '');
+          lastErr = `HTTP ${res.status}: ${errTxt.slice(0, 140)}`;
+          // If 400 invalid imageConfig, try simpler payload; if 404/403/429 stop trying this model
+          if (res.status !== 400) break;
+          continue;
+        }
+        const j = await res.json();
+        const parts = j?.candidates?.[0]?.content?.parts || [];
+        const imgPart = parts.find(p => (p.inlineData && p.inlineData.data) || (p.inline_data && p.inline_data.data));
+        if (imgPart) {
+          const idata = imgPart.inlineData || imgPart.inline_data;
+          const mime = idata.mimeType || idata.mime_type || 'image/png';
+          return { ok: true, dataUrl: `data:${mime};base64,${idata.data}`, model: modelId };
+        }
+        lastErr = 'Model returned no image data';
+      } catch (e) {
+        lastErr = e.message || 'Network error';
+      }
+    }
+    return { ok: false, error: lastErr };
+  }
+
+  async function testBananaKey(apiKey, chosenModel = 'auto') {
+    const models = chosenModel && chosenModel !== 'auto'
+      ? [chosenModel, ...BANANA_AUTO_ORDER.filter(m => m !== chosenModel)]
+      : BANANA_AUTO_ORDER;
+    let lastError = 'No model succeeded';
+    for (const m of models) {
+      const r = await callNanoBanana(apiKey, m, 'A cheerful cartoon turkey wearing sunglasses holding a tiny pie, vibrant storybook art');
+      if (r.ok) return { ok: true, model: r.model, dataUrl: r.dataUrl };
+      lastError = `${m}: ${r.error}`;
+    }
+    return { ok: false, error: lastError };
+  }
+
   function getLiveImageUrl(prompt, seed = 42) {
     const cfg = loadSettings();
     const clean = encodeURIComponent(`${prompt}, vibrant illustration, clear composition`);
@@ -2875,12 +2998,28 @@ const LiveAI = (() => {
     return `https://image.pollinations.ai/prompt/${clean}?width=512&height=360&seed=${seed}&nologo=true${keyParam}`;
   }
 
-  // Generate a real AI image using the configured provider, with safe error handling & built-in fallback
+  // Generate a real AI image using Google Nano Banana, OpenAI DALL-E 3, or Pollinations
   async function generateImage(prompt, seed = 42) {
     const cfg = loadSettings();
-    const fullPrompt = `${prompt}. Vibrant, clear, expressive illustration, no text.`;
+    const fullPrompt = `${prompt}. High-quality, vibrant, detailed illustration, clear composition, no text.`;
 
-    // 1. OpenAI DALL-E 3
+    // 1. Google Nano Banana (Gemini Image Generation)
+    if (cfg.provider === 'gemini' && cfg.apiKey) {
+      const models = cfg.bananaModel && cfg.bananaModel !== 'auto'
+        ? [cfg.bananaModel, ...BANANA_AUTO_ORDER.filter(m => m !== cfg.bananaModel)]
+        : BANANA_AUTO_ORDER;
+      let lastErr = '';
+      for (const m of models) {
+        const r = await callNanoBanana(cfg.apiKey, m, fullPrompt);
+        if (r.ok) {
+          return { url: null, dataUrl: r.dataUrl, source: 'banana', model: r.model, error: null };
+        }
+        lastErr = r.error;
+      }
+      return { url: null, dataUrl: null, source: 'builtin', error: `Nano Banana failed (${lastErr})` };
+    }
+
+    // 2. OpenAI DALL-E 3
     if (cfg.provider === 'openai' && cfg.apiKey) {
       try {
         const res = await fetch('https://api.openai.com/v1/images/generations', {
@@ -2901,39 +3040,13 @@ const LiveAI = (() => {
           const j = await res.json();
           const url = j?.data?.[0]?.url;
           const b64 = j?.data?.[0]?.b64_json;
-          if (url) return { url, dataUrl: null, source: 'openai' };
-          if (b64) return { url: null, dataUrl: `data:image/png;base64,${b64}`, source: 'openai' };
+          if (url) return { url, dataUrl: null, source: 'openai', error: null };
+          if (b64) return { url: null, dataUrl: `data:image/png;base64,${b64}`, source: 'openai', error: null };
         }
       } catch (_) {}
     }
 
-    // 2. Google Gemini Image Generation
-    if (cfg.provider === 'gemini' && cfg.apiKey) {
-      try {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: `Generate an image of: ${fullPrompt}` }] }],
-              generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-            }),
-          }
-        );
-        if (res.ok) {
-          const j = await res.json();
-          const parts = j?.candidates?.[0]?.content?.parts || [];
-          const imgPart = parts.find(p => p.inlineData && p.inlineData.data);
-          if (imgPart) {
-            const mime = imgPart.inlineData.mimeType || 'image/png';
-            return { url: null, dataUrl: `data:${mime};base64,${imgPart.inlineData.data}`, source: 'gemini' };
-          }
-        }
-      } catch (_) {}
-    }
-
-    // 3. Pollinations.ai (verified HTTP 200 image/* so 402 rate limits never render broken images!)
+    // 3. Pollinations.ai (verified HTTP 200 image/*)
     if (cfg.pollinationsKey || cfg.liveImages) {
       try {
         const url = getLiveImageUrl(prompt, seed);
@@ -2947,18 +3060,19 @@ const LiveAI = (() => {
             fr.onerror = () => resolve(null);
             fr.readAsDataURL(blob);
           });
-          return { url, dataUrl, source: 'pollinations' };
+          return { url, dataUrl, source: 'pollinations', error: null };
         }
       } catch (_) {}
     }
 
-    // 4. Always-works instant built-in AI Artist fallback
-    return { url: null, dataUrl: null, source: 'builtin' };
+    // 4. Built-in Instant AI Artist fallback
+    return { url: null, dataUrl: null, source: 'builtin', error: null };
   }
 
   return {
+    BANANA_MODELS,
     loadSettings, saveSettings, hasRealImageAI, getActiveImageLabel,
-    askJSON, getLiveImageUrl, generateImage,
+    askJSON, gradeImagesWithVision, testBananaKey, getLiveImageUrl, generateImage,
   };
 })();
 
@@ -3022,17 +3136,16 @@ const Games = (() => {
       }
     }
 
-    function makeThumb(dataUrl) {
+    function makeThumb(dataUrl, maxW = 400, quality = 0.7) {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
           const c = document.createElement('canvas');
-          const maxW = 320;
           const scale = Math.min(1, maxW / (img.width || maxW));
-          c.width = Math.max(1, Math.round((img.width || 320) * scale));
-          c.height = Math.max(1, Math.round((img.height || 220) * scale));
+          c.width = Math.max(1, Math.round((img.width || maxW) * scale));
+          c.height = Math.max(1, Math.round((img.height || Math.round(maxW * 0.72)) * scale));
           c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-          resolve(c.toDataURL('image/jpeg', 0.62));
+          resolve(c.toDataURL('image/jpeg', quality));
         };
         img.onerror = () => resolve(null);
         img.src = dataUrl;
@@ -3171,41 +3284,71 @@ const Games = (() => {
       render();
     }
 
+    async function assetToThumbDataUrl(assetPath) {
+      if (!assetPath) return null;
+      try {
+        const res = await fetch(assetPath);
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        const raw = await new Promise((resolve) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = () => resolve(null);
+          fr.readAsDataURL(blob);
+        });
+        return raw ? await makeThumb(raw, 420, 0.72) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
     async function gradeAll() {
       if (timer) { clearInterval(timer); timer = null; }
       phase = 'grading';
-      gradingStatus = 'Preparing AI art generation & resemblance grading...';
+      gradingStatus = 'Preparing Google Nano Banana AI generation & visual grading...';
       broadcastPhoneState();
       render();
 
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
       const players = App.getPlayers();
-      // Grade EVERY submission received — never drop any participant!
       const entries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
-      const results = [];
 
-      for (let i = 0; i < entries.length; i++) {
+      // Prepare target thumbnail for Gemini Vision side-by-side grading when Gemini key is set
+      let targetVisionDataUrl = null;
+      if (liveCfg.provider === 'gemini' && liveCfg.apiKey) {
+        targetVisionDataUrl = customTargetImg
+          ? await makeThumb(customTargetImg, 420, 0.72)
+          : await assetToThumbDataUrl(target.asset);
+      }
+
+      const results = new Array(entries.length);
+      let completedCount = 0;
+      let aiWarning = '';
+
+      async function processOne(i) {
         const [pid, sub] = entries[i];
         const p = players.find(x => x.id === pid) || {
           id: pid,
           name: sub.playerName || 'Player',
           avatar: sub.avatar || '🦃',
         };
-        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${entries.length})...`;
-        broadcastPhoneState();
-        const stEl = document.getElementById('clone-grading-status');
-        if (stEl) stEl.textContent = gradingStatus;
-
-        // 1. Always create instant built-in artwork as pixel baseline & fallback
         const gen = AIArt.renderDataURL(sub.text, 440, 300);
 
-        // 2. Generate real AI image via OpenAI / Gemini / Pollinations if configured
+        // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
         const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
+        if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
 
-        // 3. Grade resemblance (built-in feature + visual comparison, upgraded with LLM if configured)
+        // 2. Grade resemblance (Gemini Vision side-by-side comparison if Nano Banana succeeded, else LLM/built-in)
         let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
-        if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+        if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
+          const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
+          const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
+          if (vis && typeof vis.score === 'number') {
+            grade.score = Math.max(5, Math.min(100, Math.round(vis.score)));
+            if (vis.comment) grade.comment = vis.comment;
+          }
+        } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
           const llm = await LiveAI.askJSON(
             'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
             `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"score": number 0-100, "comment": "1 funny sentence of praise/roast"}`
@@ -3216,7 +3359,7 @@ const Games = (() => {
           }
         }
 
-        results.push({
+        results[i] = {
           player: p,
           prompt: sub.text,
           dataUrl: gen.dataUrl,
@@ -3224,13 +3367,29 @@ const Games = (() => {
           aiDataUrl: aiImg.dataUrl,
           imgSource: aiImg.source,
           ...grade,
-        });
+        };
+
+        completedCount++;
+        gradingStatus = `🍌 Generated ${completedCount}/${entries.length} AI images (${p.name} done!)...`;
+        broadcastPhoneState();
+        const stEl = document.getElementById('clone-grading-status');
+        if (stEl) stEl.textContent = gradingStatus;
+      }
+
+      // Run 3 in parallel so 10 Nano Banana images complete ~3x faster!
+      const CONCURRENCY = 3;
+      for (let start = 0; start < entries.length; start += CONCURRENCY) {
+        const slice = [];
+        for (let j = start; j < Math.min(entries.length, start + CONCURRENCY); j++) {
+          slice.push(processOne(j));
+        }
+        await Promise.all(slice);
       }
 
       results.sort((a, b) => b.score - a.score);
       gradedResults = results;
+      gradedResults._warning = aiWarning;
 
-      // Award leaderboard points based on resemblance %
       results.forEach((r, rank) => {
         const bonus = rank === 0 ? 100 : rank === 1 ? 50 : 0;
         const pts = Math.round(r.score * 2) + bonus;
@@ -3476,10 +3635,16 @@ const Games = (() => {
               <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             </div>
 
+            ${gradedResults._warning ? `
+              <div class="card small" style="border-color:var(--cranberry);color:var(--cranberry);">
+                <strong>⚠️ AI Image Notice:</strong> ${esc(gradedResults._warning)} — fell back to Built-In Instant Artist for this round. Check your key &amp; billing in <strong>⚙️ Settings</strong>!
+              </div>
+            ` : ''}
+
             <div class="clone-gallery">
               ${gradedResults.map((r, i) => {
                 const imgSrc = r.aiDataUrl || r.aiUrl || r.dataUrl;
-                const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+                const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
                 return `
                 <div class="clone-card ${i === 0 ? 'winner' : ''}">
                   <div class="art-frame" style="border:none;border-radius:0;">
@@ -5796,34 +5961,50 @@ const App = (() => {
             <h2>⚙️ Host &amp; AI Settings</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
-          <p class="small muted" style="margin:0;">All 6 games work out of the box with our Built-In Instant AI. To generate <strong>photorealistic AI images</strong> for every player's prompt in Prompt Clone, connect a Gemini, OpenAI, or Pollinations key:</p>
+          <p class="small muted" style="margin:0;">Connect a <strong>Google Nano Banana (Gemini)</strong> or OpenAI key on this Host device so <strong>every participant's prompt generates a studio-quality AI image</strong> (plus Gemini Vision grades true visual resemblance!).</p>
 
           <div class="stack-sm">
-            <label class="small"><strong>AI Judge &amp; Real Image Provider</strong></label>
+            <label class="small"><strong>AI Image &amp; Judge Provider</strong></label>
             <select class="select" id="ai-provider">
-              <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant AI (No Key Needed · Works Offline)</option>
-              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (Real AI Images + Smart Judge)</option>
+              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>🍌 Google Nano Banana (Gemini Image Gen + Vision Judge)</option>
               <option value="openai" ${cfg.provider === 'openai' ? 'selected' : ''}>🤖 OpenAI (DALL-E 3 Images + GPT-4o-mini Judge)</option>
+              <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant Artist (No Key Needed · Cartoon Mode)</option>
+            </select>
+          </div>
+
+          <div class="stack-sm" id="banana-model-wrap" style="${cfg.provider === 'gemini' ? '' : 'display:none;'}">
+            <label class="small"><strong>Google Nano Banana Model</strong></label>
+            <select class="select" id="ai-banana-model">
+              ${LiveAI.BANANA_MODELS.map(m => `<option value="${m.id}" ${cfg.bananaModel === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
             </select>
           </div>
 
           <div class="stack-sm">
-            <label class="small"><strong>Gemini or OpenAI API Key (stored only in your browser)</strong></label>
-            <input type="password" class="input" id="ai-key" placeholder="Paste Gemini or OpenAI API key..." value="${esc(cfg.apiKey)}" />
-          </div>
-
-          <div class="stack-sm">
-            <label class="small"><strong>Optional Pollinations.ai Key (unlimited free-tier images)</strong></label>
-            <input type="password" class="input" id="ai-poll-key" placeholder="Optional Pollinations API key..." value="${esc(cfg.pollinationsKey || '')}" />
-          </div>
-
-          <label class="card-warm row" style="cursor:pointer;">
-            <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} style="width:20px;height:20px;" />
-            <div>
-              <strong class="small">Try Free Pollinations.ai Images (Rate-limited to 1 / 45s per Wi-Fi)</strong>
-              <div class="xs muted">Automatically falls back to Built-In Instant Artist if rate-limited. For instant multi-player photorealistic images, use a Gemini, OpenAI, or Pollinations key above.</div>
+            <div class="row-between">
+              <label class="small"><strong>API Key (stored only in your browser)</strong></label>
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="xs" style="color:var(--pumpkin);font-weight:700;">Get Gemini Key →</a>
             </div>
-          </label>
+            <input type="password" class="input" id="ai-key" placeholder="Paste Google AI Studio (AIza...) or OpenAI key..." value="${esc(cfg.apiKey)}" />
+          </div>
+
+          <div class="card-warm stack-sm">
+            <div class="row-between">
+              <strong class="xs">Verify Your Key Before Starting:</strong>
+              <button type="button" class="btn btn-sm" id="btn-test-banana">🍌 Test Nano Banana</button>
+            </div>
+            <div id="banana-test-out" class="xs muted">Tap Test to generate a sample Nano Banana image right here!</div>
+          </div>
+
+          <details class="xs muted">
+            <summary style="cursor:pointer;font-weight:600;">Optional: Pollinations.ai Settings</summary>
+            <div class="stack-sm" style="margin-top:8px;">
+              <input type="password" class="input" id="ai-poll-key" placeholder="Optional Pollinations API key..." value="${esc(cfg.pollinationsKey || '')}" style="font-size:0.85rem;padding:8px 10px;" />
+              <label class="row" style="cursor:pointer;">
+                <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} />
+                <span>Try free Pollinations.ai (rate-limited to 1 / 45s per Wi-Fi)</span>
+              </label>
+            </div>
+          </details>
 
           <div class="card stack-sm">
             <strong class="small">🔒 Change Host Admin Passcode (Protects Score Resets)</strong>
@@ -5837,6 +6018,33 @@ const App = (() => {
           <button class="btn btn-primary btn-lg" id="ai-save">Save Settings</button>
         </div>
       </div>`;
+
+    const provSel = document.getElementById('ai-provider');
+    const bWrap = document.getElementById('banana-model-wrap');
+    provSel.onchange = () => { bWrap.style.display = provSel.value === 'gemini' ? '' : 'none'; };
+
+    document.getElementById('btn-test-banana').onclick = async () => {
+      const key = document.getElementById('ai-key').value.trim();
+      const model = document.getElementById('ai-banana-model').value;
+      const out = document.getElementById('banana-test-out');
+      if (!key) {
+        out.style.color = 'var(--cranberry)';
+        out.textContent = '❌ Paste your Google AI Studio API key above first!';
+        return;
+      }
+      out.style.color = 'var(--ink-muted)';
+      out.textContent = '🍌 Generating test image with Google Nano Banana...';
+      const r = await LiveAI.testBananaKey(key, model);
+      if (r.ok) {
+        SoundFX.ding();
+        out.style.color = 'var(--sage)';
+        out.innerHTML = `✅ <strong>Working!</strong> Generated with <code>${esc(r.model)}</code>:<div class="art-frame" style="margin-top:8px;max-width:220px;"><img src="${r.dataUrl}" alt="Nano Banana test" /></div>`;
+      } else {
+        SoundFX.wrong();
+        out.style.color = 'var(--cranberry)';
+        out.textContent = `❌ Failed: ${r.error}. (Note: Nano Banana API requires billing enabled on your Google AI Studio key.)`;
+      }
+    };
 
     document.getElementById('modal-close').onclick = closeModal;
     document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
@@ -5857,6 +6065,7 @@ const App = (() => {
       LiveAI.saveSettings({
         provider: document.getElementById('ai-provider').value,
         apiKey: document.getElementById('ai-key').value.trim(),
+        bananaModel: document.getElementById('ai-banana-model').value,
         pollinationsKey: document.getElementById('ai-poll-key').value.trim(),
         liveImages: document.getElementById('ai-live-imgs').checked,
       });
@@ -5956,7 +6165,7 @@ const App = (() => {
     function renderCloneResultCard(r, rankIdx, isMe) {
       const fallback = getLocalArt(r.prompt);
       const imgSrc = (r.imgKey && receivedImages[r.imgKey]) || r.imgUrl || fallback;
-      const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+      const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
       return `
         <div class="clone-card ${rankIdx === 0 ? 'winner' : ''}" style="${isMe ? 'border:2px solid var(--pumpkin);' : ''}">
           <div class="art-frame" style="border:none;border-radius:0;">

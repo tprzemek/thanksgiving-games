@@ -861,34 +861,50 @@ const App = (() => {
             <h2>⚙️ Host &amp; AI Settings</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
-          <p class="small muted" style="margin:0;">All 6 games work out of the box with our Built-In Instant AI. To generate <strong>photorealistic AI images</strong> for every player's prompt in Prompt Clone, connect a Gemini, OpenAI, or Pollinations key:</p>
+          <p class="small muted" style="margin:0;">Connect a <strong>Google Nano Banana (Gemini)</strong> or OpenAI key on this Host device so <strong>every participant's prompt generates a studio-quality AI image</strong> (plus Gemini Vision grades true visual resemblance!).</p>
 
           <div class="stack-sm">
-            <label class="small"><strong>AI Judge &amp; Real Image Provider</strong></label>
+            <label class="small"><strong>AI Image &amp; Judge Provider</strong></label>
             <select class="select" id="ai-provider">
-              <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant AI (No Key Needed · Works Offline)</option>
-              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (Real AI Images + Smart Judge)</option>
+              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>🍌 Google Nano Banana (Gemini Image Gen + Vision Judge)</option>
               <option value="openai" ${cfg.provider === 'openai' ? 'selected' : ''}>🤖 OpenAI (DALL-E 3 Images + GPT-4o-mini Judge)</option>
+              <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant Artist (No Key Needed · Cartoon Mode)</option>
+            </select>
+          </div>
+
+          <div class="stack-sm" id="banana-model-wrap" style="${cfg.provider === 'gemini' ? '' : 'display:none;'}">
+            <label class="small"><strong>Google Nano Banana Model</strong></label>
+            <select class="select" id="ai-banana-model">
+              ${LiveAI.BANANA_MODELS.map(m => `<option value="${m.id}" ${cfg.bananaModel === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
             </select>
           </div>
 
           <div class="stack-sm">
-            <label class="small"><strong>Gemini or OpenAI API Key (stored only in your browser)</strong></label>
-            <input type="password" class="input" id="ai-key" placeholder="Paste Gemini or OpenAI API key..." value="${esc(cfg.apiKey)}" />
-          </div>
-
-          <div class="stack-sm">
-            <label class="small"><strong>Optional Pollinations.ai Key (unlimited free-tier images)</strong></label>
-            <input type="password" class="input" id="ai-poll-key" placeholder="Optional Pollinations API key..." value="${esc(cfg.pollinationsKey || '')}" />
-          </div>
-
-          <label class="card-warm row" style="cursor:pointer;">
-            <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} style="width:20px;height:20px;" />
-            <div>
-              <strong class="small">Try Free Pollinations.ai Images (Rate-limited to 1 / 45s per Wi-Fi)</strong>
-              <div class="xs muted">Automatically falls back to Built-In Instant Artist if rate-limited. For instant multi-player photorealistic images, use a Gemini, OpenAI, or Pollinations key above.</div>
+            <div class="row-between">
+              <label class="small"><strong>API Key (stored only in your browser)</strong></label>
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="xs" style="color:var(--pumpkin);font-weight:700;">Get Gemini Key →</a>
             </div>
-          </label>
+            <input type="password" class="input" id="ai-key" placeholder="Paste Google AI Studio (AIza...) or OpenAI key..." value="${esc(cfg.apiKey)}" />
+          </div>
+
+          <div class="card-warm stack-sm">
+            <div class="row-between">
+              <strong class="xs">Verify Your Key Before Starting:</strong>
+              <button type="button" class="btn btn-sm" id="btn-test-banana">🍌 Test Nano Banana</button>
+            </div>
+            <div id="banana-test-out" class="xs muted">Tap Test to generate a sample Nano Banana image right here!</div>
+          </div>
+
+          <details class="xs muted">
+            <summary style="cursor:pointer;font-weight:600;">Optional: Pollinations.ai Settings</summary>
+            <div class="stack-sm" style="margin-top:8px;">
+              <input type="password" class="input" id="ai-poll-key" placeholder="Optional Pollinations API key..." value="${esc(cfg.pollinationsKey || '')}" style="font-size:0.85rem;padding:8px 10px;" />
+              <label class="row" style="cursor:pointer;">
+                <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} />
+                <span>Try free Pollinations.ai (rate-limited to 1 / 45s per Wi-Fi)</span>
+              </label>
+            </div>
+          </details>
 
           <div class="card stack-sm">
             <strong class="small">🔒 Change Host Admin Passcode (Protects Score Resets)</strong>
@@ -902,6 +918,33 @@ const App = (() => {
           <button class="btn btn-primary btn-lg" id="ai-save">Save Settings</button>
         </div>
       </div>`;
+
+    const provSel = document.getElementById('ai-provider');
+    const bWrap = document.getElementById('banana-model-wrap');
+    provSel.onchange = () => { bWrap.style.display = provSel.value === 'gemini' ? '' : 'none'; };
+
+    document.getElementById('btn-test-banana').onclick = async () => {
+      const key = document.getElementById('ai-key').value.trim();
+      const model = document.getElementById('ai-banana-model').value;
+      const out = document.getElementById('banana-test-out');
+      if (!key) {
+        out.style.color = 'var(--cranberry)';
+        out.textContent = '❌ Paste your Google AI Studio API key above first!';
+        return;
+      }
+      out.style.color = 'var(--ink-muted)';
+      out.textContent = '🍌 Generating test image with Google Nano Banana...';
+      const r = await LiveAI.testBananaKey(key, model);
+      if (r.ok) {
+        SoundFX.ding();
+        out.style.color = 'var(--sage)';
+        out.innerHTML = `✅ <strong>Working!</strong> Generated with <code>${esc(r.model)}</code>:<div class="art-frame" style="margin-top:8px;max-width:220px;"><img src="${r.dataUrl}" alt="Nano Banana test" /></div>`;
+      } else {
+        SoundFX.wrong();
+        out.style.color = 'var(--cranberry)';
+        out.textContent = `❌ Failed: ${r.error}. (Note: Nano Banana API requires billing enabled on your Google AI Studio key.)`;
+      }
+    };
 
     document.getElementById('modal-close').onclick = closeModal;
     document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
@@ -922,6 +965,7 @@ const App = (() => {
       LiveAI.saveSettings({
         provider: document.getElementById('ai-provider').value,
         apiKey: document.getElementById('ai-key').value.trim(),
+        bananaModel: document.getElementById('ai-banana-model').value,
         pollinationsKey: document.getElementById('ai-poll-key').value.trim(),
         liveImages: document.getElementById('ai-live-imgs').checked,
       });
@@ -1021,7 +1065,7 @@ const App = (() => {
     function renderCloneResultCard(r, rankIdx, isMe) {
       const fallback = getLocalArt(r.prompt);
       const imgSrc = (r.imgKey && receivedImages[r.imgKey]) || r.imgUrl || fallback;
-      const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+      const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
       return `
         <div class="clone-card ${rankIdx === 0 ? 'winner' : ''}" style="${isMe ? 'border:2px solid var(--pumpkin);' : ''}">
           <div class="art-frame" style="border:none;border-radius:0;">

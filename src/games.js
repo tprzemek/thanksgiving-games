@@ -149,6 +149,7 @@ const Games = (() => {
       if (directUrl) item.url = directUrl;
       else if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
       if (r.autoCollected) item.auto = 1;
+      if (Array.isArray(r.breakdown) && r.breakdown.length) item.bd = r.breakdown.slice(0, 6);
       return item;
     }
 
@@ -416,7 +417,7 @@ const Games = (() => {
         let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
         let sharedUrl = null;
         let hiResDataUrl = null;
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
+        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, customTargetImg ? null : target.checklist);
 
         try {
           // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)

@@ -290,6 +290,13 @@ const GAME_DATA = {
         asset: 'assets/clone-1.jpg',
         secretPrompt: 'A cheerful cartoon turkey wearing sunglasses riding a red skateboard on a winding road at golden orange sunset with falling autumn leaves',
         tips: 'Spot the animal, eyewear, vehicle color, sky lighting, and what is swirling through the air!',
+        checklist: [
+          { label: 'Turkey', words: ['turkey', 'gobbler'], weight: 28 },
+          { label: 'Sunglasses', words: ['sunglass', 'shades', 'glasses'], weight: 18 },
+          { label: 'Skateboard', words: ['skateboard', 'board', 'skating', 'wheels'], weight: 22 },
+          { label: 'Sunset', words: ['sunset', 'golden', 'orange sky', 'dusk', 'sun'], weight: 16 },
+          { label: 'Autumn Leaves', words: ['leaf', 'leaves', 'autumn', 'fall'], weight: 16 },
+        ],
       },
       {
         id: 'clone-2',
@@ -298,6 +305,13 @@ const GAME_DATA = {
         asset: 'assets/clone-2.jpg',
         secretPrompt: 'A cute astronaut in a white spacesuit holding a giant slice of pumpkin pie with whipped cream on Mars in outer space with ringed planet and fireworks',
         tips: 'Notice who is holding what, the red cratered planet, what is in the sky, and the 3D illustration style!',
+        checklist: [
+          { label: 'Astronaut', words: ['astronaut', 'spaceman', 'spacesuit', 'space suit'], weight: 26 },
+          { label: 'Pumpkin Pie', words: ['pie', 'pumpkin', 'whipped cream', 'slice'], weight: 24 },
+          { label: 'Mars / Space', words: ['mars', 'space', 'planet', 'crater', 'moon', 'red planet'], weight: 22 },
+          { label: 'Ringed Planet', words: ['saturn', 'ring', 'planet', 'stars'], weight: 14 },
+          { label: 'Fireworks', words: ['firework', 'spark', 'burst'], weight: 14 },
+        ],
       },
       {
         id: 'clone-3',
@@ -306,6 +320,13 @@ const GAME_DATA = {
         asset: 'assets/clone-3.jpg',
         secretPrompt: 'A fluffy golden orange tabby cat wearing a royal gold crown sitting on a checkered kitchen table beside a steaming gravy boat and two glowing candles oil painting',
         tips: 'Spot the exact animal, color, headgear, table objects, lighting, and painting style!',
+        checklist: [
+          { label: 'Orange Cat', words: ['cat', 'kitten', 'tabby', 'feline'], weight: 26 },
+          { label: 'Gold Crown', words: ['crown', 'tiara', 'royal', 'king', 'queen'], weight: 20 },
+          { label: 'Gravy Boat', words: ['gravy', 'sauce', 'boat', 'pitcher', 'steam'], weight: 20 },
+          { label: 'Candles & Table', words: ['candle', 'table', 'checkered', 'kitchen', 'tablecloth'], weight: 18 },
+          { label: 'Oil Painting', words: ['oil', 'paint', 'painterly', 'canvas', 'classic'], weight: 16 },
+        ],
       },
       {
         id: 'clone-4',
@@ -314,6 +335,13 @@ const GAME_DATA = {
         asset: 'assets/clone-4.jpg',
         secretPrompt: 'A neon cyberpunk retro silver robot playing an orange electric guitar on a city skyline rooftop at night with three colorful floating balloons',
         tips: 'Catch the glowing neon style, instrument, floating props, time of day, and background skyline!',
+        checklist: [
+          { label: 'Robot', words: ['robot', 'bot', 'android', 'cyborg', 'mech'], weight: 26 },
+          { label: 'Electric Guitar', words: ['guitar', 'instrument', 'playing', 'rock'], weight: 22 },
+          { label: 'Neon Cyberpunk', words: ['neon', 'cyberpunk', 'cyber', 'glow', 'synth'], weight: 20 },
+          { label: 'Night City Skyline', words: ['city', 'skyline', 'rooftop', 'building', 'night'], weight: 16 },
+          { label: 'Balloons', words: ['balloon', 'floating'], weight: 16 },
+        ],
       },
       {
         id: 'clone-5',
@@ -322,6 +350,13 @@ const GAME_DATA = {
         asset: 'assets/clone-5.jpg',
         secretPrompt: 'Watercolor illustration of a golden retriever puppy wearing a blue starry wizard hat beside a glowing carved orange pumpkin on snowy mountains with snowfall',
         tips: 'Check the soft watercolor style, dog breed, hat, glowing companion, mountain terrain, and weather!',
+        checklist: [
+          { label: 'Golden Puppy', words: ['dog', 'puppy', 'pup', 'retriever', 'golden'], weight: 26 },
+          { label: 'Wizard Hat', words: ['wizard', 'hat', 'magic', 'witch', 'starry'], weight: 20 },
+          { label: 'Carved Pumpkin', words: ['pumpkin', 'jack', 'lantern', 'carved', 'gourd'], weight: 20 },
+          { label: 'Snowy Mountains', words: ['snow', 'mountain', 'winter', 'peak'], weight: 18 },
+          { label: 'Watercolor Style', words: ['watercolor', 'water color', 'paint', 'soft', 'storybook'], weight: 16 },
+        ],
       },
       {
         id: 'clone-6',
@@ -330,6 +365,13 @@ const GAME_DATA = {
         asset: 'assets/clone-6.jpg',
         secretPrompt: 'A cartoon silver UFO beaming a green ray onto a sunny tropical beach with palm trees where a turkey wearing sunglasses relaxes under a rainbow',
         tips: 'Two very different visitors on vacation — catch the glowing beam, eyewear, beach props, and sky arch!',
+        checklist: [
+          { label: 'UFO & Green Beam', words: ['ufo', 'spaceship', 'saucer', 'alien', 'beam', 'ray'], weight: 26 },
+          { label: 'Turkey in Shades', words: ['turkey', 'sunglass', 'shades'], weight: 24 },
+          { label: 'Tropical Beach', words: ['beach', 'palm', 'sand', 'ocean', 'tropical', 'island'], weight: 20 },
+          { label: 'Rainbow', words: ['rainbow', 'arch'], weight: 16 },
+          { label: 'Cartoon Style', words: ['cartoon', 'illustrated', 'sunny', 'vibrant'], weight: 14 },
+        ],
       },
       {
         id: 'clone-7',
@@ -338,6 +380,13 @@ const GAME_DATA = {
         asset: 'assets/clone-7.jpg',
         secretPrompt: 'Pixel art pilgrim wearing a buckle hat riding a red and white rocket at starry night with a bright rainbow',
         tips: 'Notice the 8-bit pixel art style first! Then catch every object and sky detail.',
+        checklist: [
+          { label: 'Pixel Art Style', words: ['pixel', '8-bit', '8bit', 'retro', 'arcade', 'blocky'], weight: 24 },
+          { label: 'Pilgrim & Buckle Hat', words: ['pilgrim', 'buckle', 'hat', 'settler'], weight: 24 },
+          { label: 'Rocket', words: ['rocket', 'spaceship', 'shuttle', 'fire', 'blast'], weight: 22 },
+          { label: 'Starry Night', words: ['night', 'star', 'space', 'dark sky'], weight: 15 },
+          { label: 'Rainbow', words: ['rainbow', 'trail'], weight: 15 },
+        ],
       },
       {
         id: 'clone-8',
@@ -346,6 +395,13 @@ const GAME_DATA = {
         asset: 'assets/clone-8.jpg',
         secretPrompt: 'Vintage sepia photograph of a dragon wearing a chef hat juggling glowing cranberries near an erupting volcano',
         tips: 'Notice the old-timey sepia photo style, the hat, the floating berries, and the fiery background!',
+        checklist: [
+          { label: 'Dragon', words: ['dragon', 'winged', 'beast', 'scales'], weight: 26 },
+          { label: 'Chef Hat', words: ['chef', 'hat', 'cook', 'baker'], weight: 18 },
+          { label: 'Juggling Berries', words: ['juggl', 'cranberr', 'berr', 'ball', 'fruit'], weight: 18 },
+          { label: 'Erupting Volcano', words: ['volcano', 'lava', 'erupt', 'mountain', 'smoke'], weight: 20 },
+          { label: 'Vintage Sepia Photo', words: ['vintage', 'sepia', 'old', 'photo', 'antique', 'retro'], weight: 18 },
+        ],
       },
       {
         id: 'clone-9',
@@ -354,6 +410,13 @@ const GAME_DATA = {
         asset: 'assets/clone-9.jpg',
         secretPrompt: 'A cartoon orange fox wearing a red superhero cape holding a gold trophy cup in an autumn forest with falling leaves',
         tips: 'Check the woodland animal, costume piece, golden prize, and autumn scenery!',
+        checklist: [
+          { label: 'Orange Fox', words: ['fox', 'orange'], weight: 28 },
+          { label: 'Red Superhero Cape', words: ['cape', 'superhero', 'hero', 'red', 'cloak'], weight: 22 },
+          { label: 'Gold Trophy', words: ['trophy', 'cup', 'gold', 'award', 'prize'], weight: 22 },
+          { label: 'Autumn Forest', words: ['forest', 'wood', 'tree', 'autumn', 'fall'], weight: 16 },
+          { label: 'Falling Leaves', words: ['leaf', 'leaves', 'falling'], weight: 12 },
+        ],
       },
       {
         id: 'clone-10',
@@ -362,6 +425,13 @@ const GAME_DATA = {
         asset: 'assets/clone-10.jpg',
         secretPrompt: 'Black and white ink sketch drawing of three smiling carved pumpkins under a starry crescent moon night sky with glowing candles',
         tips: 'Count carefully, spot the exact black-and-white ink sketch style, and notice the moon & candles!',
+        checklist: [
+          { label: 'Three Pumpkins', words: ['pumpkin', 'jack', 'three', '3', 'carved'], weight: 28 },
+          { label: 'Ink Sketch / B&W', words: ['sketch', 'ink', 'black and white', 'black & white', 'drawing', 'pencil', 'line art', 'pen'], weight: 26 },
+          { label: 'Crescent Moon', words: ['moon', 'crescent'], weight: 18 },
+          { label: 'Starry Night Sky', words: ['star', 'night', 'sky'], weight: 14 },
+          { label: 'Candles', words: ['candle', 'flame', 'glow'], weight: 14 },
+        ],
       },
       {
         id: 'clone-11',
@@ -370,6 +440,13 @@ const GAME_DATA = {
         asset: 'assets/clone-11.jpg',
         secretPrompt: 'Colorful underwater ocean cartoon of a turkey wearing a golden royal crown swimming beside a pepperoni pizza slice and three floating balloons',
         tips: 'Check the submerged coral reef world, main duo, royal headgear, and floating party props!',
+        checklist: [
+          { label: 'Turkey', words: ['turkey', 'gobbler'], weight: 24 },
+          { label: 'Royal Crown', words: ['crown', 'king', 'royal', 'gold'], weight: 18 },
+          { label: 'Pepperoni Pizza', words: ['pizza', 'pepperoni', 'slice'], weight: 22 },
+          { label: 'Underwater / Reef', words: ['underwater', 'ocean', 'sea', 'coral', 'reef', 'bubble', 'swim', 'fish'], weight: 22 },
+          { label: 'Balloons', words: ['balloon', 'floating'], weight: 14 },
+        ],
       },
       {
         id: 'clone-12',
@@ -378,6 +455,13 @@ const GAME_DATA = {
         asset: 'assets/clone-12.jpg',
         secretPrompt: 'Soft watercolor painting of a silver-haired grandma chef wearing an apron and chef hat holding a pumpkin pie beside a steaming gravy boat in the rain',
         tips: 'Look for the soft watercolor style, the cozy bakery, food details, and rainy puddles!',
+        checklist: [
+          { label: 'Grandma Chef', words: ['grandma', 'grandmother', 'old woman', 'lady', 'chef', 'baker', 'apron'], weight: 26 },
+          { label: 'Pumpkin Pie', words: ['pie', 'pumpkin', 'tart'], weight: 20 },
+          { label: 'Gravy Boat', words: ['gravy', 'sauce', 'boat', 'steam'], weight: 18 },
+          { label: 'Rain / Puddles', words: ['rain', 'puddle', 'wet', 'umbrella', 'drizzle', 'storm'], weight: 18 },
+          { label: 'Watercolor Style', words: ['watercolor', 'water color', 'paint', 'soft'], weight: 18 },
+        ],
       },
       {
         id: 'clone-13',
@@ -386,6 +470,13 @@ const GAME_DATA = {
         asset: 'assets/clone-13.jpg',
         secretPrompt: '3D folded origami paper samurai frog wearing red paper armor and helmet holding a paper katana sword on a wet mossy rock in a misty bamboo forest with glowing red paper lanterns',
         tips: 'Spot the folded origami paper craft style, the warrior amphibian, armor colors, mossy stone, and glowing lanterns!',
+        checklist: [
+          { label: 'Origami Paper Style', words: ['origami', 'paper', 'folded', 'craft'], weight: 24 },
+          { label: 'Frog', words: ['frog', 'toad', 'amphibian'], weight: 24 },
+          { label: 'Samurai Armor & Sword', words: ['samurai', 'armor', 'helmet', 'katana', 'sword', 'warrior'], weight: 22 },
+          { label: 'Bamboo & Mossy Rock', words: ['bamboo', 'forest', 'moss', 'rock', 'stone', 'mist'], weight: 16 },
+          { label: 'Red Lanterns', words: ['lantern', 'red', 'glow', 'lamp'], weight: 14 },
+        ],
       },
       {
         id: 'clone-14',
@@ -394,6 +485,13 @@ const GAME_DATA = {
         asset: 'assets/clone-14.jpg',
         secretPrompt: 'Steampunk barn owl pilot wearing brass aviator goggles and leather scarf sitting inside a wooden clockwork airship cockpit with copper gears and glowing compasses flying over golden sunset clouds',
         tips: 'Catch the steampunk fantasy style, bird species, goggles, cockpit instruments, and golden cloud sky!',
+        checklist: [
+          { label: 'Barn Owl', words: ['owl', 'barn owl'], weight: 26 },
+          { label: 'Aviator Goggles & Scarf', words: ['goggle', 'glasses', 'scarf', 'pilot', 'aviator'], weight: 20 },
+          { label: 'Steampunk / Gears', words: ['steampunk', 'gear', 'brass', 'copper', 'clockwork', 'compass'], weight: 22 },
+          { label: 'Airship Cockpit', words: ['airship', 'cockpit', 'blimp', 'ship', 'balloon', 'propeller', 'wooden'], weight: 18 },
+          { label: 'Sunset Clouds', words: ['cloud', 'sunset', 'golden', 'sky', 'flying', 'sun'], weight: 14 },
+        ],
       },
       {
         id: 'clone-15',
@@ -402,6 +500,13 @@ const GAME_DATA = {
         asset: 'assets/clone-15.jpg',
         secretPrompt: 'Stop-motion claymation green T-Rex dinosaur wearing a tall white chef hat and red polka-dot apron flipping golden pancakes in a skillet inside a cozy sunlit miniature kitchen',
         tips: 'Don\'t miss the sculpted claymation look, apron pattern, flying pancake, and sunlit miniature kitchen!',
+        checklist: [
+          { label: 'Claymation Style', words: ['clay', 'claymation', 'stop-motion', 'stop motion', 'plasticine', 'sculpted'], weight: 22 },
+          { label: 'Green T-Rex Dino', words: ['dino', 't-rex', 'trex', 'tyrannosaur', 'green'], weight: 24 },
+          { label: 'Chef Hat & Polka Apron', words: ['chef', 'hat', 'apron', 'polka', 'red'], weight: 18 },
+          { label: 'Flipping Pancakes', words: ['pancake', 'flip', 'pan', 'skillet', 'frying'], weight: 20 },
+          { label: 'Cozy Kitchen', words: ['kitchen', 'stove', 'counter', 'window', 'miniature'], weight: 16 },
+        ],
       },
       {
         id: 'clone-16',
@@ -410,6 +515,13 @@ const GAME_DATA = {
         asset: 'assets/clone-16.jpg',
         secretPrompt: 'Backlit Tiffany stained glass mosaic peacock with sapphire blue emerald green and gold tail feathers perched on a snowy pine branch under a glowing silver crescent moon and starry night sky',
         tips: 'Name the stained-glass mosaic medium first! Then capture the bird, jewel colors, snowy pines, and crescent moon.',
+        checklist: [
+          { label: 'Peacock', words: ['peacock', 'plume', 'tail'], weight: 28 },
+          { label: 'Stained Glass Style', words: ['stained glass', 'stained-glass', 'glass', 'mosaic', 'tiffany', 'window'], weight: 26 },
+          { label: 'Snowy Pine Branch', words: ['snow', 'pine', 'winter', 'branch', 'evergreen', 'tree'], weight: 18 },
+          { label: 'Crescent Moon & Stars', words: ['moon', 'crescent', 'star', 'night'], weight: 16 },
+          { label: 'Blue / Green / Gold', words: ['blue', 'sapphire', 'green', 'emerald', 'gold', 'teal', 'jewel'], weight: 12 },
+        ],
       },
       {
         id: 'clone-17',
@@ -418,6 +530,13 @@ const GAME_DATA = {
         asset: 'assets/clone-17.jpg',
         secretPrompt: 'Retro pop-art comic book illustration with Ben-Day halftone dots of a happy corgi dog wearing pink heart sunglasses surfing a giant curling turquoise ocean wave beside a yellow rubber duck',
         tips: 'Notice the bold comic-book halftone dots, heart-shaped shades, surfboard colors, and tiny surfing sidekick!',
+        checklist: [
+          { label: 'Corgi Dog', words: ['corgi', 'dog', 'puppy'], weight: 26 },
+          { label: 'Pop-Art / Comic Style', words: ['pop art', 'pop-art', 'comic', 'halftone', 'retro', 'dots', 'lichtenstein', 'warhol'], weight: 22 },
+          { label: 'Heart Sunglasses', words: ['heart', 'sunglass', 'shades', 'pink', 'glasses'], weight: 18 },
+          { label: 'Surfing Giant Wave', words: ['surf', 'wave', 'ocean', 'surfboard', 'turquoise'], weight: 20 },
+          { label: 'Rubber Duck', words: ['duck', 'ducky', 'rubber'], weight: 14 },
+        ],
       },
       {
         id: 'clone-18',
@@ -426,6 +545,13 @@ const GAME_DATA = {
         asset: 'assets/clone-18.jpg',
         secretPrompt: 'Enchanted fantasy forest at twilight with giant bioluminescent turquoise and purple glowing mushroom treehouses with warm round amber windows hanging rope bridges fireflies and a sparkling creek',
         tips: 'Describe the glowing cyan and purple giant mushrooms, hanging rope bridges, warm windows, and twilight stream!',
+        checklist: [
+          { label: 'Giant Glowing Mushrooms', words: ['mushroom', 'toadstool', 'bioluminesc', 'glow', 'cyan', 'turquoise', 'purple'], weight: 28 },
+          { label: 'Treehouses & Windows', words: ['house', 'treehouse', 'village', 'window', 'door', 'home', 'fairy'], weight: 22 },
+          { label: 'Hanging Rope Bridges', words: ['bridge', 'rope', 'walkway', 'ladder'], weight: 18 },
+          { label: 'Sparkling Creek', words: ['creek', 'stream', 'river', 'water', 'brook'], weight: 16 },
+          { label: 'Twilight Forest & Fireflies', words: ['forest', 'twilight', 'night', 'firefl', 'fantasy', 'enchanted', 'magical'], weight: 16 },
+        ],
       },
       {
         id: 'clone-19',
@@ -434,6 +560,13 @@ const GAME_DATA = {
         asset: 'assets/clone-19.jpg',
         secretPrompt: 'Vintage 1950s chrome American diner photograph with black-and-white checkered floor and turquoise booths featuring an emperor penguin waiter in red bow tie striped vest soda-jerk hat and roller skates carrying a pink strawberry milkshake with cherry',
         tips: 'Catch the retro 1950s diner photography style, penguin\'s outfit & roller skates, checkered floor, and pink milkshake!',
+        checklist: [
+          { label: 'Penguin Waiter', words: ['penguin', 'waiter', 'server'], weight: 26 },
+          { label: 'Roller Skates', words: ['skate', 'roller'], weight: 18 },
+          { label: 'Pink Milkshake', words: ['milkshake', 'shake', 'strawberry', 'cherry', 'tray', 'pink'], weight: 20 },
+          { label: '1950s Diner & Checkered Floor', words: ['diner', '1950', '50s', 'retro', 'checker', 'booth', 'chrome'], weight: 22 },
+          { label: 'Bow Tie / Vest / Hat', words: ['bow tie', 'bowtie', 'vest', 'stripe', 'hat', 'cap'], weight: 14 },
+        ],
       },
       {
         id: 'clone-20',
@@ -442,6 +575,13 @@ const GAME_DATA = {
         asset: 'assets/clone-20.jpg',
         secretPrompt: 'Isometric 3D tilt-shift miniature diorama of a cozy autumn coffee shop carved inside a mossy oak tree stump decorated with warm string lights surrounded by fallen golden leaves with knitted-sweater squirrels drinking coffee at tiny wooden tables',
         tips: 'Name the miniature 3D tilt-shift diorama style, carved stump café, warm fairy lights, and sweater-wearing customers!',
+        checklist: [
+          { label: 'Miniature 3D Diorama', words: ['miniature', 'diorama', 'isometric', 'tilt-shift', 'tilt shift', 'tiny', '3d'], weight: 22 },
+          { label: 'Tree-Stump Café', words: ['stump', 'tree', 'cafe', 'café', 'coffee', 'shop', 'moss'], weight: 26 },
+          { label: 'Squirrels in Sweaters', words: ['squirrel', 'sweater', 'knit', 'drinking'], weight: 24 },
+          { label: 'String Lights', words: ['light', 'fairy', 'string', 'warm', 'glow'], weight: 14 },
+          { label: 'Autumn Fallen Leaves', words: ['autumn', 'fall', 'leaf', 'leaves', 'golden', 'acorn'], weight: 14 },
+        ],
       },
     ],
   },

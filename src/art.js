@@ -921,96 +921,50 @@ const AIArt = (() => {
     return { pct, matched, missed };
   }
 
-  // Grade a Prompt Clone submission against a target challenge (wide, fair 10..98 spread, zero 70% clustering!)
-  function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas) {
-    const t = parsePrompt(targetPrompt);
-    const u = parsePrompt(userPrompt);
+  // Grade a Prompt Clone submission against the exact target checklist + lexical detail match.
+  // NEVER uses the built-in cartoon turkey/prop catalog so tags & scores are 100% faithful to the real artwork!
+  function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas, checklist) {
+    const uLower = String(userPrompt || '').toLowerCase();
     const lex = lexicalMatch(targetPrompt, userPrompt);
     const breakdown = [];
-    const tLower = String(targetPrompt || '').toLowerCase();
+    let checkPct = lex.pct;
 
-    // Only count catalog features that genuinely appear in targetPrompt (never false-match default 'turkey'!)
-    const tHasExplicitSub = SUBJECT_RULES.some(s => s.words.some(w => tLower.includes(w)));
-    const tHasExplicitScene = SCENE_RULES.some(s => s.words.some(w => tLower.includes(w)));
-
-    let featurePoints = 0;
-    let featureMax = 0;
-
-    if (tHasExplicitSub) {
-      featureMax += 35;
-      const subHits = t.subjects.filter(s => u.subjects.includes(s));
-      featurePoints += Math.round((subHits.length / Math.max(1, t.subjects.length)) * 35);
-      breakdown.push({
-        label: `Subject (${t.subjectLabels.join(' + ')})`,
-        hit: subHits.length === t.subjects.length,
-        partial: subHits.length > 0 && subHits.length < t.subjects.length,
-      });
+    if (Array.isArray(checklist) && checklist.length > 0) {
+      let earned = 0;
+      let maxW = 0;
+      for (const item of checklist) {
+        const w = item.weight || 20;
+        maxW += w;
+        const words = item.words || [];
+        const matchedWords = words.filter(kw => uLower.includes(kw.toLowerCase()));
+        const hit = matchedWords.length > 0;
+        if (hit) earned += w;
+        breakdown.push({ label: item.label, hit, partial: false });
+      }
+      checkPct = Math.round((earned / Math.max(1, maxW)) * 100);
+    } else {
+      // Custom uploaded image: derive tags purely from the actual matched/missed words of the target description!
+      lex.matched.slice(0, 4).forEach(w => breakdown.push({ label: w, hit: true, partial: false }));
+      lex.missed.slice(0, 2).forEach(w => breakdown.push({ label: w, hit: false, partial: false }));
     }
 
-    if (tHasExplicitScene) {
-      featureMax += 25;
-      const sceneHit = t.scene === u.scene;
-      if (sceneHit) featurePoints += 25;
-      breakdown.push({ label: `Setting (${t.sceneLabel})`, hit: sceneHit });
-    }
-
-    if (t.props.length > 0) {
-      featureMax += 20;
-      const propHits = t.props.filter(p => u.props.includes(p));
-      featurePoints += Math.round((propHits.length / t.props.length) * 20);
-      breakdown.push({
-        label: `Details (${t.propLabels.join(', ')})`,
-        hit: propHits.length === t.props.length,
-        partial: propHits.length > 0 && propHits.length < t.props.length,
-      });
-    }
-
-    if (t.weathers.length > 0 || t.colors.length > 0) {
-      featureMax += 10;
-      const wHit = t.weathers.some(w => u.weathers.includes(w));
-      const cHit = t.colors.some(c => u.colors.some(uc => uc.name === c.name));
-      const hit = (t.weathers.length ? wHit : true) && (t.colors.length ? cHit : true);
-      const partial = wHit || cHit;
-      if (hit) featurePoints += 10;
-      else if (partial) featurePoints += 5;
-      const lbl = [...t.weatherLabels, ...t.colors.map(c => c.name)].join(', ');
-      breakdown.push({ label: `Mood/Color (${lbl})`, hit, partial: !hit && partial });
-    }
-
-    if (t.style !== 'storybook') {
-      featureMax += 10;
-      const styleHit = t.style === u.style;
-      if (styleHit) featurePoints += 10;
-      breakdown.push({ label: `Style (${t.styleLabel})`, hit: styleHit });
-    }
-
-    // Add key matched/missed word chips when target is a rich studio artwork outside basic catalog
-    if (breakdown.length < 3) {
-      lex.matched.slice(0, 3).forEach(w => breakdown.push({ label: w, hit: true }));
-      lex.missed.slice(0, 2).forEach(w => breakdown.push({ label: w, hit: false }));
-    }
-
-    const semanticPct = featureMax > 0 ? Math.round((featurePoints / featureMax) * 100) : lex.pct;
-    const visualPct = (tHasExplicitSub && targetCanvas && userCanvas) ? compareCanvases(targetCanvas, userCanvas) : lex.pct;
     const wordCount = (userPrompt || '').trim().split(/\s+/).filter(Boolean).length;
+    let total = Array.isArray(checklist) && checklist.length > 0
+      ? Math.round(checkPct * 0.65 + lex.pct * 0.35)
+      : lex.pct;
 
-    let total = tHasExplicitSub
-      ? Math.round(lex.pct * 0.50 + semanticPct * 0.35 + visualPct * 0.15)
-      : Math.round(lex.pct * 0.85 + semanticPct * 0.15);
-
-    // Reward descriptive specificity, penalize vague 1-3 word guesses
     if (wordCount < 2) total = Math.min(total, 14);
     else if (wordCount < 4) total = Math.min(total, 36);
     total = Math.max(8, Math.min(98, total));
 
     let comment = '';
     if (total >= 86) comment = 'Uncanny clone! Are you secretly the AI that drew this?!';
-    else if (total >= 70) comment = 'Strong detective work — nailed the big picture and several key details!';
+    else if (total >= 70) comment = 'Strong detective work — nailed the big picture and almost every key detail!';
     else if (total >= 50) comment = 'Solid direction! Got the core vibe right, with a few creative detours.';
     else if (total >= 30) comment = 'Same universe, totally different movie — hilarious creative remix!';
     else comment = 'Wild abstract plot twist! The AI went on a totally unexpected adventure.';
 
-    return { score: total, semanticPct, visualPct, lexicalPct: lex.pct, breakdown, comment, parsed: u };
+    return { score: total, semanticPct: checkPct, visualPct: lex.pct, lexicalPct: lex.pct, breakdown, comment };
   }
 
   return { parsePrompt, renderToCanvas, renderDataURL, compareCanvases, lexicalMatch, gradeCloneSubmission };

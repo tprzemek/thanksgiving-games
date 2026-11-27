@@ -1205,7 +1205,7 @@ const App = (() => {
             imgUrl: r.url || null,
             imgKey: r.k || null,
             autoCollected: !!r.auto,
-            breakdown: [],
+            breakdown: Array.isArray(r.bd) ? r.bd : [],
           });
         }
       }

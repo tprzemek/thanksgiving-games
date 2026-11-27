@@ -32,7 +32,9 @@ const Games = (() => {
     let timeLeft = 180;
     let timer = null;
     let target = GAME_DATA.promptClone.challenges[idx];
+    let roundId = 0;
     let customTargetImg = null; // Optional uploaded/custom image dataURL
+    let customTargetThumb = null; // Compressed thumbnail for phone sync
     let customTargetDesc = '';
     let targetArt = null; // { dataUrl, canvas, parsed }
     let submissions = {}; // playerId -> { text, ts }
@@ -52,18 +54,35 @@ const Games = (() => {
       }
     }
 
+    function makeThumb(dataUrl, cb) {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        const maxW = 300;
+        const scale = Math.min(1, maxW / (img.width || maxW));
+        c.width = Math.max(1, Math.round((img.width || 300) * scale));
+        c.height = Math.max(1, Math.round((img.height || 200) * scale));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        cb(c.toDataURL('image/jpeg', 0.58));
+      };
+      img.onerror = () => cb(null);
+      img.src = dataUrl;
+    }
+
     function broadcastPhoneState() {
       const liveCfg = LiveAI.loadSettings();
       const targetUrl = !customTargetImg && liveCfg.liveImages
         ? LiveAI.getLiveImageUrl(target.secretPrompt, idx + 101)
         : null;
       App.broadcastHostState('promptClone', phase, {
-        title: target.title,
-        tips: target.tips,
-        difficulty: target.difficulty,
+        roundId,
+        challengeId: customTargetImg ? null : target.id,
+        title: customTargetImg ? 'Custom Target Image' : target.title,
+        tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
+        difficulty: customTargetImg ? 'Custom' : target.difficulty,
         targetPromptSeed: idx + 101,
-        // Don't send secretPrompt to phones! Only send visual hint/image if live URL, else tell phone to look at Host screen
         liveImageUrl: targetUrl,
+        customImageThumb: customTargetImg ? customTargetThumb : null,
         timeLeft,
         submittedIds: Object.keys(submissions),
       });
@@ -81,6 +100,7 @@ const Games = (() => {
 
     function startWriting() {
       buildTarget();
+      roundId = Date.now();
       submissions = {};
       timeLeft = durationSec;
       phase = 'writing';
@@ -214,6 +234,7 @@ const Games = (() => {
 
         document.getElementById('clone-next-scene').onclick = () => {
           customTargetImg = null;
+          customTargetThumb = null;
           idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
           target = GAME_DATA.promptClone.challenges[idx];
           buildTarget();
@@ -230,6 +251,7 @@ const Games = (() => {
           reader.onload = () => {
             customTargetImg = reader.result;
             buildTarget();
+            makeThumb(customTargetImg, (thumb) => { customTargetThumb = thumb; });
             render();
           };
           reader.readAsDataURL(f);

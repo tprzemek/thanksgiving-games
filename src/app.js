@@ -931,6 +931,36 @@ const App = (() => {
     let me = null;
     let hostState = { game: null, phase: 'hub', payload: {}, leaderboard: [] };
     let submittedKey = '';
+    let lastViewKey = '';
+    let activeCloneRound = '';
+    let cloneDraft = '';
+    let activeBotRound = '';
+    let botDraft = '';
+    let cachedTargetKey = '';
+    let cachedTargetDataUrl = '';
+
+    function getPhoneCloneImageHtml(payload) {
+      if (payload.customImageThumb) {
+        return `<div class="art-frame"><img src="${payload.customImageThumb}" alt="Target Image" /></div>`;
+      }
+      const ch = GAME_DATA.promptClone.challenges.find(
+        c => (payload.challengeId && c.id === payload.challengeId) || (payload.title && c.title === payload.title)
+      );
+      if (ch) {
+        if (cachedTargetKey !== ch.id) {
+          cachedTargetKey = ch.id;
+          cachedTargetDataUrl = AIArt.renderDataURL(ch.secretPrompt, 440, 300).dataUrl;
+        }
+        if (payload.liveImageUrl) {
+          return `<div class="art-frame"><img src="${payload.liveImageUrl}" onerror="this.src='${cachedTargetDataUrl}'" alt="Target Image" /></div>`;
+        }
+        return `<div class="art-frame"><img src="${cachedTargetDataUrl}" alt="Target Image" /></div>`;
+      }
+      if (payload.liveImageUrl) {
+        return `<div class="art-frame"><img src="${payload.liveImageUrl}" alt="Target Image" /></div>`;
+      }
+      return '';
+    }
 
     RoomSync.connect(roomCode);
     RoomSync.onMessage((msg) => {
@@ -943,6 +973,9 @@ const App = (() => {
     function renderPhone() {
       const app = document.getElementById('app');
       if (!me) {
+        // Never wipe the Join form if a HOST_STATE arrives while guest is typing their name!
+        if (lastViewKey === 'join') return;
+        lastViewKey = 'join';
         app.innerHTML = `
           <div class="controller-shell stack fade-in">
             <div class="center stack-sm" style="margin-top:12px;">
@@ -991,6 +1024,7 @@ const App = (() => {
             ageGroup: document.getElementById('j-age').value,
             avatar: chosenAvatar,
           };
+          lastViewKey = '';
           SoundFX.ding();
           RoomSync.send({ type: 'JOIN', ...me });
           renderPhone();
@@ -1000,22 +1034,64 @@ const App = (() => {
 
       const myScore = (hostState.leaderboard || []).find(x => x.id === me.id)?.score ?? 0;
       const { game, phase, payload = {} } = hostState;
+
+      // Keep top score pill updated in-place even when we skip tearing down an active typing screen
+      const scorePill = document.getElementById('phone-score-pts');
+      if (scorePill) scorePill.textContent = `${myScore} pts`;
+
+      const cloneRoundKey = `clone_${payload.roundId || payload.title || ''}`;
+      const botRoundKey = `bot_${payload.question || ''}`;
+
+      // Reset draft cleanly only when a genuinely new round begins
+      if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
+        activeCloneRound = cloneRoundKey;
+        cloneDraft = '';
+      }
+      if (game === 'spotTheBot' && phase === 'submit' && activeBotRound !== botRoundKey) {
+        activeBotRound = botRoundKey;
+        botDraft = '';
+      }
+
+      const cloneAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === cloneRoundKey;
+      const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
+
+      // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
+      let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
+      if (game === 'promptClone' && phase === 'writing') {
+        viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
+      } else if (game === 'spotTheBot' && phase === 'submit') {
+        viewKey = `spotTheBot:submit:${botRoundKey}:${botAlready ? 'done' : 'edit'}`;
+      }
+
+      if (viewKey === lastViewKey && (viewKey.endsWith(':edit'))) {
+        const subEl = document.getElementById('phone-sub-count');
+        if (subEl && Array.isArray(payload.submittedIds)) {
+          subEl.textContent = `${payload.submittedIds.length} locked in so far`;
+        }
+        return;
+      }
+      lastViewKey = viewKey;
+
       let body = '';
 
       if (game === 'promptClone' && phase === 'writing') {
-        const already = (payload.submittedIds || []).includes(me.id) || submittedKey === `clone_${payload.title}`;
-        body = already ? `
+        const imgHtml = getPhoneCloneImageHtml(payload);
+        body = cloneAlready ? `
           <div class="card center stack">
             <div style="font-size:3rem;">🔒✨</div>
             <h2>Prompt Locked In!</h2>
             <p class="small muted">Waiting for everyone else—get ready to see what the AI paints from your prompt!</p>
+            ${imgHtml}
           </div>` : `
           <div class="card stack">
-            <span class="tag tag-new">PROMPT CLONE · ${esc(payload.difficulty || '')}</span>
-            <h2>🔍 Recreate the Target Image!</h2>
-            <p class="small muted" style="margin:0;">Look at the Host screen! Hint: ${esc(payload.tips || '')}</p>
-            ${payload.liveImageUrl ? `<div class="art-frame"><img src="${payload.liveImageUrl}" alt="Target" /></div>` : ''}
-            <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style..."></textarea>
+            <div class="row-between">
+              <span class="tag tag-new">PROMPT CLONE · ${esc(payload.difficulty || '')}</span>
+              <span class="xs muted" id="phone-sub-count">${(payload.submittedIds || []).length} locked in so far</span>
+            </div>
+            <h2 style="margin:0;">🔍 Recreate This Image!</h2>
+            ${imgHtml}
+            <p class="xs muted" style="margin:0;">💡 Hint: ${esc(payload.tips || 'Describe subjects, setting, props, colors, and art style!')}</p>
+            <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style...">${esc(cloneDraft)}</textarea>
             <div class="chip-wrap">
               ${['pixel art', 'neon', 'vintage', 'watercolor', 'ink sketch', 'sunset', 'outer space', 'sunglasses', 'crown', 'rainbow'].map(c =>
                 `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
@@ -1023,17 +1099,19 @@ const App = (() => {
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
-        const already = (payload.submittedIds || []).includes(me.id) || submittedKey === `bot_${payload.question}`;
-        body = already ? `
+        body = botAlready ? `
           <div class="card center stack">
             <div style="font-size:3rem;">🤖🔒</div>
             <h2>Answer Submitted!</h2>
             <p class="small muted">Get your finger ready—next up, race to spot the AI Bot!</p>
           </div>` : `
           <div class="card stack">
-            <span class="tag tag-gold">SPOT THE BOT</span>
+            <div class="row-between">
+              <span class="tag tag-gold">SPOT THE BOT</span>
+              <span class="xs muted" id="phone-sub-count">${(payload.submittedIds || []).length} locked in so far</span>
+            </div>
             <h3>"${esc(payload.question || '')}"</h3>
-            <textarea class="textarea" id="p-bot-in" placeholder="Write your funniest or sneakiest answer..."></textarea>
+            <textarea class="textarea" id="p-bot-in" placeholder="Write your funniest or sneakiest answer...">${esc(botDraft)}</textarea>
             <button class="btn btn-primary btn-lg" id="p-bot-send">🔒 Send Secret Answer</button>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'reveal') {
@@ -1095,7 +1173,7 @@ const App = (() => {
       app.innerHTML = `
         <div class="controller-shell stack">
           <div class="row-between">
-            <span class="player-chip">${me.avatar} ${esc(me.name)} <span class="pts">${myScore} pts</span></span>
+            <span class="player-chip">${me.avatar} ${esc(me.name)} <span class="pts" id="phone-score-pts">${myScore} pts</span></span>
             <span class="tag mono">ROOM ${esc(roomCode)}</span>
           </div>
           ${body}
@@ -1104,24 +1182,34 @@ const App = (() => {
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');
       if (pCloneIn) {
+        pCloneIn.oninput = (e) => { cloneDraft = e.target.value; };
         app.querySelectorAll('[data-pchip]').forEach(ch => {
-          ch.onclick = () => { pCloneIn.value = (pCloneIn.value.trim() ? pCloneIn.value.trim() + ' ' : '') + ch.dataset.pchip; };
+          ch.onclick = () => {
+            pCloneIn.value = (pCloneIn.value.trim() ? pCloneIn.value.trim() + ' ' : '') + ch.dataset.pchip;
+            cloneDraft = pCloneIn.value;
+          };
         });
         document.getElementById('p-clone-send').onclick = () => {
           const val = pCloneIn.value.trim();
           if (!val) return;
-          submittedKey = `clone_${payload.title}`;
+          submittedKey = cloneRoundKey;
+          cloneDraft = '';
           SoundFX.ding();
           RoomSync.send({ type: 'ACTION', playerId: me.id, action: 'SUBMIT_CLONE_PROMPT', value: val });
           renderPhone();
         };
+      }
+      const pBotIn = document.getElementById('p-bot-in');
+      if (pBotIn) {
+        pBotIn.oninput = (e) => { botDraft = e.target.value; };
       }
       const pBotSend = document.getElementById('p-bot-send');
       if (pBotSend) {
         pBotSend.onclick = () => {
           const val = document.getElementById('p-bot-in').value.trim();
           if (!val) return;
-          submittedKey = `bot_${payload.question}`;
+          submittedKey = botRoundKey;
+          botDraft = '';
           SoundFX.ding();
           RoomSync.send({ type: 'ACTION', playerId: me.id, action: 'SUBMIT_BOT_ANSWER', value: val });
           renderPhone();

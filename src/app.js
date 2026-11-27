@@ -1201,29 +1201,42 @@ const App = (() => {
       return localGenCache[k];
     }
 
+    function unpackCompactResult(r) {
+      return {
+        rank: r.rk,
+        playerId: r.id,
+        playerName: r.n,
+        avatar: r.av || '🦃',
+        prompt: r.p || '',
+        score: r.s,
+        pointsAwarded: r.pts,
+        basePts: typeof r.bp === 'number' ? r.bp : Math.round((r.s || 0) * 2),
+        bonusPts: typeof r.bn === 'number' ? r.bn : Math.max(0, (r.pts || 0) - Math.round((r.s || 0) * 2)),
+        scoringMode: r.sm || 'checklist',
+        primaryScore: typeof r.ps === 'number' ? r.ps : null,
+        lexicalPct: typeof r.lx === 'number' ? r.lx : null,
+        gapToFirst: typeof r.g1 === 'number' ? r.g1 : null,
+        marginOrGap: typeof r.gu === 'number' ? r.gu : null,
+        aboveName: r.an || '',
+        tieBreakNote: r.tb || '',
+        comment: r.c || '',
+        imgSource: r.src || 'builtin',
+        imgUrl: r.url || null,
+        imgKey: r.k || null,
+        autoCollected: !!r.auto,
+        breakdown: Array.isArray(r.bd) ? r.bd : [],
+      };
+    }
+
     function normalizeResults(payload) {
       const merged = new Map();
-      // 1. Atomic compact results embedded directly inside HOST_STATE (works in 1 packet on ntfy.sh!)
+      // 1. Atomic compact results embedded directly inside HOST_STATE
       if (Array.isArray(payload.results)) {
         for (const r of payload.results) {
-          merged.set(r.id, {
-            rank: r.rk,
-            playerId: r.id,
-            playerName: r.n,
-            avatar: r.av || '🦃',
-            prompt: r.p || '',
-            score: r.s,
-            pointsAwarded: r.pts,
-            comment: r.c || '',
-            imgSource: r.src || 'builtin',
-            imgUrl: r.url || null,
-            imgKey: r.k || null,
-            autoCollected: !!r.auto,
-            breakdown: Array.isArray(r.bd) ? r.bd : [],
-          });
+          merged.set(r.id, unpackCompactResult(r));
         }
       }
-      // 2. Merge any optional per-item CLONE_RESULT_ITEM / CLONE_RESULTS_BATCH messages
+      // 2. Merge any optional per-item CLONE_RESULT_ITEM / CLONE_RESULTS_BATCH / CLONE_RESULTS_FULL messages
       const byRound = cloneResultsByRound[payload.roundId];
       if (byRound) {
         for (const [pid, item] of byRound.entries()) {
@@ -1259,10 +1272,61 @@ const App = (() => {
       return '';
     }
 
-    function renderCloneResultCard(r, rankIdx, isMe) {
+    function formatStandingText(r, rankIdx, allItems, totalCount) {
+      const total = Math.max(totalCount || 0, allItems.length || 1);
+      const leader = allItems[0];
+      const above = rankIdx > 0 ? allItems[rankIdx - 1] : null;
+      const runnerUp = allItems[1] || null;
+      if (rankIdx === 0) {
+        const margin = typeof r.marginOrGap === 'number' && r.marginOrGap > 0
+          ? r.marginOrGap
+          : (runnerUp ? Math.max(0, r.score - runnerUp.score) : 0);
+        const runnerName = r.aboveName || runnerUp?.playerName || '';
+        if (total <= 1) return `🥇 1st of 1`;
+        if (margin === 0 && runnerName) return `🥇 1st of ${total} · Tied with #2 (${esc(runnerName)}) — won tie-breaker!`;
+        return `🥇 1st of ${total}${runnerName ? ` · Ahead of #2 (${esc(runnerName)}) by +${margin}%` : ''}`;
+      }
+      const gap1 = typeof r.gapToFirst === 'number' ? r.gapToFirst : (leader ? Math.max(0, leader.score - r.score) : 0);
+      const gapUp = typeof r.marginOrGap === 'number' ? r.marginOrGap : (above ? Math.max(0, above.score - r.score) : gap1);
+      const aboveName = r.aboveName || above?.playerName || '';
+      const medal = rankIdx === 1 ? '🥈 ' : rankIdx === 2 ? '🥉 ' : '';
+      const parts = [`${medal}#${rankIdx + 1} of ${total}`];
+      if (rankIdx === 1) {
+        parts.push(gap1 === 0 ? `Tied on Match % with #1` : `${gap1}% behind #1${leader ? ` (${esc(leader.playerName)})` : ''}`);
+      } else {
+        parts.push(gapUp === 0 ? `Tied on Match % with #${rankIdx}${aboveName ? ` (${esc(aboveName)})` : ''}` : `${gapUp}% behind #${rankIdx}${aboveName ? ` (${esc(aboveName)})` : ''}`);
+        if (gap1 > gapUp) parts.push(`${gap1}% behind #1`);
+      }
+      return parts.join(' · ');
+    }
+
+    function formatScoreMathLines(r, rankIdx) {
+      const basePts = typeof r.basePts === 'number' ? r.basePts : Math.round((r.score || 0) * 2);
+      const bonusPts = typeof r.bonusPts === 'number' ? r.bonusPts : Math.max(0, (r.pointsAwarded || 0) - basePts);
+      const bonusTag = bonusPts === 100 ? '🥇 1st Bonus' : bonusPts === 50 ? '🥈 2nd Bonus' : bonusPts === 25 ? '🥉 3rd Bonus' : (bonusPts > 0 ? '🏆 Podium Bonus' : '');
+      let matchLine = '';
+      if (r.scoringMode === 'vision' && typeof r.primaryScore === 'number') {
+        matchLine = `📊 <strong>Match %:</strong> 88% Visual Rubric (${r.primaryScore}/100) + 12% Prompt Detail (${r.lexicalPct ?? 0}%) = <strong>${r.score}%</strong>`;
+      } else if (r.scoringMode === 'llm' && typeof r.primaryScore === 'number') {
+        matchLine = `📊 <strong>Match %:</strong> 85% AI Rubric (${r.primaryScore}/100) + 15% Prompt Detail (${r.lexicalPct ?? 0}%) = <strong>${r.score}%</strong>`;
+      } else if (typeof r.primaryScore === 'number') {
+        const hits = (r.breakdown || []).filter(b => b.hit).length;
+        const totalChecks = (r.breakdown || []).length;
+        const checkNote = totalChecks ? `${hits}/${totalChecks} key details = ${r.primaryScore}%` : `${r.primaryScore}%`;
+        matchLine = `📊 <strong>Match %:</strong> 65% Key Details (${checkNote}) + 35% Prompt Detail (${r.lexicalPct ?? 0}%) = <strong>${r.score}%</strong>`;
+      }
+      const ptsLine = bonusPts > 0
+        ? `⭐ <strong>Points:</strong> ${r.score}% × 2 (${basePts}) + ${bonusPts} ${bonusTag} = <span class="math-total">+${r.pointsAwarded} pts</span>`
+        : `⭐ <strong>Points:</strong> ${r.score}% × 2 = <span class="math-total">+${r.pointsAwarded} pts</span> <span class="muted">(Top 3 earn +100/+50/+25 bonus)</span>`;
+      return { matchLine, ptsLine };
+    }
+
+    function renderCloneResultCard(r, rankIdx, isMe, allItems = [], totalCount = 0) {
       const fallback = getLocalArt(r.prompt);
       const imgSrc = (r.imgKey && receivedImages[r.imgKey]) || r.imgUrl || fallback;
       const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+      const standingText = formatStandingText(r, rankIdx, allItems, totalCount);
+      const { matchLine, ptsLine } = formatScoreMathLines(r, rankIdx);
       return `
         <div class="clone-card ${rankIdx === 0 ? 'winner' : ''}" style="${isMe ? 'border:2px solid var(--pumpkin);' : ''}">
           <div class="art-frame" style="border:none;border-radius:0;">
@@ -1274,13 +1338,21 @@ const App = (() => {
               <span class="mono" style="font-weight:800;font-size:1.1rem;color:${r.score >= 70 ? 'var(--sage)' : 'var(--pumpkin)'};">${r.score}% Match</span>
             </div>
             <div class="meter-track"><div class="meter-fill" style="width:${r.score}%;background:${r.score >= 75 ? 'var(--sage)' : r.score >= 50 ? 'var(--gold)' : 'var(--cranberry)'};"></div></div>
+            <div class="standing-bar ${rankIdx === 0 ? 'first' : ''}">
+              <span>${standingText}</span>
+              ${r.tieBreakNote ? `<span class="tag tag-gold">${esc(r.tieBreakNote)}</span>` : ''}
+            </div>
             <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
             <div class="chip-wrap">
               <span class="tag tag-gold">🎨 ${badge}</span>
               ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
               ${(r.breakdown || []).map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
             </div>
-            <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
+            <div class="judge-box">🤖 <strong>Why this score:</strong> ${esc(r.comment || 'Graded on visual match and prompt detail.')}</div>
+            <div class="score-math-box">
+              ${matchLine ? `<div>${matchLine}</div>` : ''}
+              <div>${ptsLine}</div>
+            </div>
           </div>
         </div>`;
     }
@@ -1297,21 +1369,7 @@ const App = (() => {
         if (data && Array.isArray(data.items)) {
           if (!cloneResultsByRound[roundId]) cloneResultsByRound[roundId] = new Map();
           for (const r of data.items) {
-            cloneResultsByRound[roundId].set(r.id, {
-              rank: r.rk,
-              playerId: r.id,
-              playerName: r.n,
-              avatar: r.av || '🦃',
-              prompt: r.p || '',
-              score: r.s,
-              pointsAwarded: r.pts,
-              comment: r.c || '',
-              imgSource: r.src || 'builtin',
-              imgUrl: r.url || null,
-              imgKey: r.k || null,
-              autoCollected: !!r.auto,
-              breakdown: Array.isArray(r.bd) ? r.bd : [],
-            });
+            cloneResultsByRound[roundId].set(r.id, unpackCompactResult(r));
           }
           if (hostState.game === 'promptClone' && hostState.phase === 'results') {
             lastViewKey = '';
@@ -1352,21 +1410,7 @@ const App = (() => {
       } else if ((msg.type === 'CLONE_RESULTS_FULL' || msg.type === 'CLONE_RESULTS_BATCH') && msg.roundId && Array.isArray(msg.items)) {
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
         for (const r of msg.items) {
-          cloneResultsByRound[msg.roundId].set(r.id, {
-            rank: r.rk,
-            playerId: r.id,
-            playerName: r.n,
-            avatar: r.av || '🦃',
-            prompt: r.p || '',
-            score: r.s,
-            pointsAwarded: r.pts,
-            comment: r.c || '',
-            imgSource: r.src || 'builtin',
-            imgUrl: r.url || null,
-            imgKey: r.k || null,
-            autoCollected: !!r.auto,
-            breakdown: Array.isArray(r.bd) ? r.bd : [],
-          });
+          cloneResultsByRound[msg.roundId].set(r.id, unpackCompactResult(r));
         }
         if (hostState.game === 'promptClone' && hostState.phase === 'results') {
           lastViewKey = '';
@@ -1608,16 +1652,51 @@ const App = (() => {
         const myItem = items.find(r => r.playerId === me.id);
         const imgHtml = getPhoneCloneImageHtml(payload);
         const expectedTotal = Math.max(items.length, Number(payload.totalResults) || 0);
+        const hasVision = items.some(r => r.scoringMode === 'vision');
+        const myStandingSummary = myItem ? formatStandingText(myItem, myItem.rank, items, expectedTotal) : '';
+        const myMath = myItem ? formatScoreMathLines(myItem, myItem.rank) : null;
         body = `
           <div class="stack fade-in">
             ${winner ? `
               <div class="card center stack-sm" style="border:2px solid var(--gold);">
-                <div style="font-size:2.2rem;">👑🏆</div>
+                <div style="font-size:2.1rem;">👑🏆</div>
                 <h2 style="margin:0;">Winner: ${winner.avatar || '🦃'} ${esc(winner.playerName)} (${winner.score}% Match!)</h2>
-                ${myItem ? `<span class="tag tag-new">You placed #${myItem.rank + 1} · ${myItem.score}% Match (+${myItem.pointsAwarded} pts)</span>` : ''}
-                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; scores ranked below!</p>
+                ${myItem ? `
+                  <div class="standing-bar ${myItem.rank === 0 ? 'first' : ''}" style="justify-content:center;width:100%;">
+                    <span><strong>Your Standing:</strong> ${myStandingSummary} · ${myItem.score}% Match</span>
+                    ${myItem.tieBreakNote ? `<span class="tag tag-gold">${esc(myItem.tieBreakNote)}</span>` : ''}
+                  </div>
+                  <div class="score-math-box" style="width:100%;text-align:left;">
+                    ${myMath.matchLine ? `<div>${myMath.matchLine}</div>` : ''}
+                    <div>${myMath.ptsLine}</div>
+                  </div>
+                ` : ''}
+                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; score breakdowns ranked below!</p>
               </div>
             ` : ''}
+
+            <details class="score-guide">
+              <summary>
+                <span>📊 How Scoring &amp; Standings Work</span>
+                <span class="tag tag-gold">Tap to expand ▾</span>
+              </summary>
+              <div class="guide-grid">
+                <div class="guide-item">
+                  <strong>1. Match % (0–100%)</strong><br/>
+                  ${hasVision
+                    ? 'AI Vision compares your generated picture to the original on 5 axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
+                    : 'Grades your prompt on <strong>5 Key Scene Details (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> comparing your words to the original scene.'}
+                </div>
+                <div class="guide-item">
+                  <strong>2. Leaderboard Points</strong><br/>
+                  <strong>Match % × 2</strong> base points, plus Podium Bonuses: <strong>🥇 1st: +100</strong>, <strong>🥈 2nd: +50</strong>, <strong>🥉 3rd: +25</strong>.
+                </div>
+                <div class="guide-item">
+                  <strong>3. Standings &amp; Ties</strong><br/>
+                  Ranked highest Match % → lowest. If two players tie on Match %, higher <strong>Prompt Detail %</strong> wins the tie-breaker!
+                </div>
+              </div>
+            </details>
 
             <div class="card-warm stack-sm">
               <div class="row-between">
@@ -1631,7 +1710,7 @@ const App = (() => {
             <div class="stack-sm">
               <strong class="small">🏆 All Participants Ranked (#1 → #${expectedTotal || items.length}):</strong>
               ${items.length
-                ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id)).join('')
+                ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id, items, expectedTotal)).join('')
                 : `<div class="card center small muted">Loading everyone's AI creations... Tap 🔄 Sync above if needed!</div>`}
               ${expectedTotal > items.length ? `<div class="card-warm center xs muted">⏳ Syncing remaining participants (${items.length}/${expectedTotal})…</div>` : ''}
             </div>

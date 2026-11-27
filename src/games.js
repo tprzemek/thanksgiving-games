@@ -139,12 +139,21 @@ const Games = (() => {
         id: r.player.id,
         n: String(r.player.name || 'Player').slice(0, 18),
         av: r.player.avatar || '🦃',
-        p: String(r.prompt || '').slice(0, 140),
+        p: String(r.prompt || '').slice(0, 180),
         s: r.score,
         pts: r.pointsAwarded,
-        c: String(r.comment || '').slice(0, 80),
+        bp: r.basePts ?? Math.round((r.score || 0) * 2),
+        bn: r.bonusPts ?? 0,
+        sm: r.scoringMode || 'checklist',
+        ps: r.primaryScore ?? r.semanticPct ?? r.score,
+        lx: r.lexicalPct ?? 0,
+        g1: r.gapToFirst ?? 0,
+        gu: r.marginOrGap ?? 0,
+        an: String(r.aboveName || '').slice(0, 18),
+        c: String(r.comment || '').slice(0, 260),
         src: r.imgSource || 'builtin',
       };
+      if (r.tieBreakNote) item.tb = String(r.tieBreakNote).slice(0, 100);
       const directUrl = r.sharedUrl || r.aiUrl || null;
       if (directUrl) item.url = directUrl;
       else if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
@@ -445,11 +454,16 @@ const Games = (() => {
 
           // 3. Grade resemblance (Strict 5-axis Gemini Vision rubric if Nano Banana succeeded, else LLM/lexical+concept)
           const lexPct = grade.lexicalPct ?? AIArt.lexicalMatch(refPrompt, sub.text).pct;
+          grade.lexicalPct = lexPct;
+          grade.scoringMode = 'checklist';
+          grade.primaryScore = grade.semanticPct ?? grade.score;
           if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
             const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
             const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
             if (vis && typeof vis.score === 'number') {
               // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
+              grade.scoringMode = 'vision';
+              grade.primaryScore = vis.visionScore ?? vis.score;
               grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
               if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
               if (vis.comment) grade.comment = vis.comment;
@@ -457,13 +471,29 @@ const Games = (() => {
           } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
             const llm = await LiveAI.askJSON(
               'You are a strict, fair visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
-              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "comment": "1 sharp sentence explaining what matched and what missed"}`
+              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "comment": "2 short, concrete sentences: first praise what matched closely, second explain what differed or was missing and cost points."}`
             );
             if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
               const rawScore = typeof llm.subject === 'number'
-                ? Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))
-                : llm.score;
+                ? Math.max(5, Math.min(99, Math.round((llm.subject || 0) + (llm.setting || 0) + (llm.props || 0) + (llm.style || 0) + (llm.palette || 0))))
+                : Math.max(5, Math.min(99, Math.round(llm.score)));
+              grade.scoringMode = 'llm';
+              grade.primaryScore = rawScore;
               grade.score = Math.max(5, Math.min(99, Math.round(rawScore * 0.85 + lexPct * 0.15)));
+              if (typeof llm.subject === 'number') {
+                const subS = Math.max(0, Math.min(30, Math.round(llm.subject || 0)));
+                const setS = Math.max(0, Math.min(20, Math.round(llm.setting || 0)));
+                const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
+                const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
+                const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
+                grade.breakdown = [
+                  { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
+                  { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
+                  { label: `Props ${prpS}/20`, hit: prpS >= 15, partial: prpS >= 9 && prpS < 15 },
+                  { label: `Style ${styS}/15`, hit: styS >= 11, partial: styS >= 6 && styS < 11 },
+                  { label: `Palette ${palS}/15`, hit: palS >= 11, partial: palS >= 6 && palS < 11 },
+                ];
+              }
               if (llm.comment) grade.comment = llm.comment;
             }
           }
@@ -518,9 +548,26 @@ const Games = (() => {
       gradedResults._warning = aiWarning;
 
       finalResults.forEach((r, rank) => {
-        const bonus = rank === 0 ? 100 : rank === 1 ? 50 : 0;
-        const pts = Math.round(r.score * 2) + bonus;
+        const bonus = rank === 0 ? 100 : rank === 1 ? 50 : rank === 2 ? 25 : 0;
+        const basePts = Math.round(r.score * 2);
+        const pts = basePts + bonus;
+        r.rank = rank;
+        r.totalPlayers = finalResults.length;
+        r.basePts = basePts;
+        r.bonusPts = bonus;
         r.pointsAwarded = pts;
+        r.gapToFirst = rank === 0 ? 0 : Math.max(0, finalResults[0].score - r.score);
+        r.marginOrGap = rank === 0
+          ? (finalResults[1] ? Math.max(0, r.score - finalResults[1].score) : 0)
+          : Math.max(0, finalResults[rank - 1].score - r.score);
+        r.aboveName = rank === 0
+          ? (finalResults[1]?.player?.name || '')
+          : (finalResults[rank - 1]?.player?.name || '');
+        const tiedPrev = rank > 0 && finalResults[rank - 1].score === r.score;
+        const tiedNext = rank < finalResults.length - 1 && finalResults[rank + 1].score === r.score;
+        r.tieBreakNote = (tiedPrev || tiedNext)
+          ? `Tie-breaker: Prompt Detail ${r.lexicalPct || 0}%`
+          : '';
         App.addScore(r.player.id, pts);
       });
 
@@ -766,6 +813,9 @@ const Games = (() => {
       }
 
       if (phase === 'results') {
+        const hasVision = gradedResults.some(r => r.scoringMode === 'vision');
+        const totalN = gradedResults.length;
+        const leaderName = gradedResults[0]?.player?.name || '';
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
@@ -782,10 +832,33 @@ const Games = (() => {
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">All ${gradedResults.length} ranked results sent to every phone!</span>
+                <span class="tag tag-gold">All ${totalN} ranked results sent to every phone!</span>
               </div>
               <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             </div>
+
+            <details class="score-guide" open>
+              <summary>
+                <span>📊 How Scoring &amp; Standings Work</span>
+                <span class="tag tag-gold">Tap to hide/show ▾</span>
+              </summary>
+              <div class="guide-grid">
+                <div class="guide-item">
+                  <strong>1. Match % (0–100%)</strong><br/>
+                  ${hasVision
+                    ? 'AI Vision compares each generated image to the original on 5 axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
+                    : 'Grades each prompt on <strong>5 Key Scene Details (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> comparing words to the original scene.'}
+                </div>
+                <div class="guide-item">
+                  <strong>2. Leaderboard Points</strong><br/>
+                  <strong>Match % × 2</strong> base points, plus Top-3 Podium Bonuses: <strong>🥇 1st: +100</strong>, <strong>🥈 2nd: +50</strong>, <strong>🥉 3rd: +25</strong>.
+                </div>
+                <div class="guide-item">
+                  <strong>3. Standings &amp; Ties</strong><br/>
+                  Ranked highest Match % → lowest. Ties on Match % break by higher <strong>Prompt Detail %</strong>, then prompt length.
+                </div>
+              </div>
+            </details>
 
             ${gradedResults._warning ? `
               <div class="card small" style="border-color:var(--cranberry);color:var(--cranberry);">
@@ -797,6 +870,39 @@ const Games = (() => {
               ${gradedResults.map((r, i) => {
                 const imgSrc = r.aiDataUrl || r.sharedUrl || r.aiUrl || r.dataUrl;
                 const badge = r.imgSource === 'banana' ? '🍌 Nano Banana' : r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+                let standingLine = '';
+                if (i === 0) {
+                  if (totalN <= 1) standingLine = '🥇 1st of 1';
+                  else if (r.marginOrGap === 0 && r.aboveName) standingLine = `🥇 1st of ${totalN} · Tied with #2 (${esc(r.aboveName)}) — won tie-breaker!`;
+                  else standingLine = `🥇 1st of ${totalN}${r.aboveName ? ` · Ahead of #2 (${esc(r.aboveName)}) by +${r.marginOrGap}%` : ''}`;
+                } else {
+                  const medal = i === 1 ? '🥈 ' : i === 2 ? '🥉 ' : '';
+                  const parts = [`${medal}#${i + 1} of ${totalN}`];
+                  if (i === 1) {
+                    parts.push(r.gapToFirst === 0 ? `Tied on Match % with #1` : `${r.gapToFirst}% behind #1 (${esc(leaderName)})`);
+                  } else {
+                    parts.push(r.marginOrGap === 0 ? `Tied on Match % with #${i} (${esc(r.aboveName)})` : `${r.marginOrGap}% behind #${i} (${esc(r.aboveName)})`);
+                    if (r.gapToFirst > r.marginOrGap) parts.push(`${r.gapToFirst}% behind #1`);
+                  }
+                  standingLine = parts.join(' · ');
+                }
+                const basePts = r.basePts ?? Math.round(r.score * 2);
+                const bonusPts = r.bonusPts ?? 0;
+                const bonusTag = bonusPts === 100 ? '🥇 1st Bonus' : bonusPts === 50 ? '🥈 2nd Bonus' : bonusPts === 25 ? '🥉 3rd Bonus' : '';
+                let matchLine = '';
+                if (r.scoringMode === 'vision' && typeof r.primaryScore === 'number') {
+                  matchLine = `📊 <strong>Match %:</strong> 88% Visual Rubric (${r.primaryScore}/100) + 12% Prompt Detail (${r.lexicalPct ?? 0}%) = <strong>${r.score}%</strong>`;
+                } else if (r.scoringMode === 'llm' && typeof r.primaryScore === 'number') {
+                  matchLine = `📊 <strong>Match %:</strong> 85% AI Rubric (${r.primaryScore}/100) + 15% Prompt Detail (${r.lexicalPct ?? 0}%) = <strong>${r.score}%</strong>`;
+                } else if (typeof r.primaryScore === 'number') {
+                  const hits = (r.breakdown || []).filter(b => b.hit).length;
+                  const totalChecks = (r.breakdown || []).length;
+                  const checkNote = totalChecks ? `${hits}/${totalChecks} key details = ${r.primaryScore}%` : `${r.primaryScore}%`;
+                  matchLine = `📊 <strong>Match %:</strong> 65% Key Details (${checkNote}) + 35% Prompt Detail (${r.lexicalPct ?? 0}%) = <strong>${r.score}%</strong>`;
+                }
+                const ptsLine = bonusPts > 0
+                  ? `⭐ <strong>Points:</strong> ${r.score}% × 2 (${basePts}) + ${bonusPts} ${bonusTag} = <span class="math-total">+${r.pointsAwarded} pts</span>`
+                  : `⭐ <strong>Points:</strong> ${r.score}% × 2 = <span class="math-total">+${r.pointsAwarded} pts</span> <span class="muted">(Top 3 earn +100/+50/+25 bonus)</span>`;
                 return `
                 <div class="clone-card ${i === 0 ? 'winner' : ''}">
                   <div class="art-frame" style="border:none;border-radius:0;">
@@ -808,13 +914,21 @@ const Games = (() => {
                       <span class="mono" style="font-weight:800;font-size:1.15rem;color:${r.score >= 70 ? 'var(--sage)' : 'var(--pumpkin)'};">${r.score}% Match</span>
                     </div>
                     <div class="meter-track"><div class="meter-fill" style="width:${r.score}%;background:${r.score >= 75 ? 'var(--sage)' : r.score >= 50 ? 'var(--gold)' : 'var(--cranberry)'};"></div></div>
+                    <div class="standing-bar ${i === 0 ? 'first' : ''}">
+                      <span>${standingLine}</span>
+                      ${r.tieBreakNote ? `<span class="tag tag-gold">${esc(r.tieBreakNote)}</span>` : ''}
+                    </div>
                     <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
                     <div class="chip-wrap">
                       <span class="tag tag-gold">🎨 ${badge}</span>
                       ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
                       ${r.breakdown.map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
                     </div>
-                    <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
+                    <div class="judge-box">🤖 <strong>Why this score:</strong> ${esc(r.comment || 'Graded on visual match and prompt detail.')}</div>
+                    <div class="score-math-box">
+                      ${matchLine ? `<div>${matchLine}</div>` : ''}
+                      <div>${ptsLine}</div>
+                    </div>
                   </div>
                 </div>`;
               }).join('')}

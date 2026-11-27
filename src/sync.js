@@ -694,7 +694,7 @@ Grade Image 2 against Image 1 strictly across these 5 visual axes (use exact dis
 - props (0-20): clothing, hats, held items, secondary characters/objects (deduct heavily for missing or invented props)
 - style (0-15): exact art medium & rendering style (e.g. claymation vs photo vs watercolor vs origami vs comic vs stained glass; wrong style = 0-5)
 - composition (0-15): color palette, lighting, camera angle, framing
-Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": int, "composition": int, "comment": "1 sharp, specific sentence explaining what matched closely and what differed"}.` },
+Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": int, "composition": int, "comment": "2 short, concrete sentences: first praise the specific visual elements that matched closely, second explain specifically what differed or was missing and cost points."}.` },
                     { inlineData: imgA },
                     { inlineData: imgB },
                   ],
@@ -730,7 +730,7 @@ Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": 
                 { label: `Style ${sty}/15`, hit: sty >= 11, partial: sty >= 6 && sty < 11 },
                 { label: `Palette ${cmp}/15`, hit: cmp >= 11, partial: cmp >= 6 && cmp < 11 },
               ];
-              return { score: total, breakdown, comment: j.comment || '' };
+              return { score: total, visionScore: total, breakdown, comment: j.comment || '' };
             }
             if (typeof j.score === 'number') return j;
           }

@@ -957,14 +957,31 @@ const AIArt = (() => {
     else if (wordCount < 4) total = Math.min(total, 36);
     total = Math.max(8, Math.min(98, total));
 
+    const hitLabels = breakdown.filter(b => b.hit).map(b => b.label);
+    const missLabels = breakdown.filter(b => !b.hit).map(b => b.label);
     let comment = '';
-    if (total >= 86) comment = 'Uncanny clone! Are you secretly the AI that drew this?!';
-    else if (total >= 70) comment = 'Strong detective work — nailed the big picture and almost every key detail!';
-    else if (total >= 50) comment = 'Solid direction! Got the core vibe right, with a few creative detours.';
-    else if (total >= 30) comment = 'Same universe, totally different movie — hilarious creative remix!';
-    else comment = 'Wild abstract plot twist! The AI went on a totally unexpected adventure.';
+    if (wordCount < 4) {
+      comment = `Very short prompt (${wordCount} word${wordCount === 1 ? '' : 's'}) capped your score. Describe the main subject, setting, props, colors, and art style!`;
+    } else if (hitLabels.length && missLabels.length) {
+      comment = `Matched: ${hitLabels.join(', ')}. Missed: ${missLabels.join(', ')} (describing those would raise your Match %).`;
+    } else if (hitLabels.length && !missLabels.length) {
+      comment = `Nailed every key element (${hitLabels.join(', ')})! Your prompt detail coverage (${lex.pct}%) set the final Match %.`;
+    } else if (missLabels.length) {
+      comment = `Missed the key elements: ${missLabels.join(', ')}. Call out the exact subject, setting, props, and art style next round!`;
+    } else {
+      comment = `Prompt detail coverage was ${lex.pct}% compared to the original scene description.`;
+    }
 
-    return { score: total, semanticPct: checkPct, visualPct: lex.pct, lexicalPct: lex.pct, breakdown, comment };
+    return {
+      score: total,
+      semanticPct: checkPct,
+      visualPct: lex.pct,
+      lexicalPct: lex.pct,
+      primaryScore: checkPct,
+      scoringMode: 'checklist',
+      breakdown,
+      comment,
+    };
   }
 
   return { parsePrompt, renderToCanvas, renderDataURL, compareCanvases, lexicalMatch, gradeCloneSubmission };

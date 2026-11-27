@@ -15,6 +15,8 @@ const RoomSync = (() => {
   let lanBaseUrl = '';
   let es = null;
   let bc = null;
+  let pollTimer = null;
+  let wakeHandler = null;
   let listeners = [];
   let seenIds = new Set();
   const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
@@ -24,7 +26,7 @@ const RoomSync = (() => {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 600) {
+    if (seenIds.size > 800) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
@@ -83,6 +85,25 @@ const RoomSync = (() => {
     return 'tgfeast26_' + (code || 'DEMO').toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
+  async function pollNow() {
+    if (mode !== 'cloud' || !roomCode) return;
+    try {
+      const topic = topicName(roomCode);
+      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=5m`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const text = await res.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const outer = JSON.parse(line);
+          if (outer && outer.message) {
+            emit(JSON.parse(outer.message));
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   function connect(code) {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
@@ -104,7 +125,7 @@ const RoomSync = (() => {
     } else if (mode === 'cloud') {
       try {
         const topic = topicName(roomCode);
-        es = new EventSource(`https://ntfy.sh/${topic}/sse`);
+        es = new EventSource(`https://ntfy.sh/${topic}/sse?since=5m`);
         es.onmessage = (ev) => {
           try {
             const outer = JSON.parse(ev.data);
@@ -115,6 +136,17 @@ const RoomSync = (() => {
         };
         es.onerror = () => {};
       } catch (_) {}
+
+      // Gentle safety poll + instant wake poll for mobile Safari/Chrome sleeping tabs
+      pollNow();
+      pollTimer = setInterval(() => {
+        if (typeof document === 'undefined' || !document.hidden) pollNow();
+      }, 4000);
+      if (typeof document !== 'undefined') {
+        wakeHandler = () => { if (!document.hidden) pollNow(); };
+        document.addEventListener('visibilitychange', wakeHandler);
+        window.addEventListener('focus', wakeHandler);
+      }
     }
 
     return roomCode;
@@ -123,6 +155,12 @@ const RoomSync = (() => {
   function disconnect() {
     if (es) { try { es.close(); } catch (_) {} es = null; }
     if (bc) { try { bc.close(); } catch (_) {} bc = null; }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (wakeHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', wakeHandler);
+      window.removeEventListener('focus', wakeHandler);
+      wakeHandler = null;
+    }
   }
 
   async function send(payload) {
@@ -147,13 +185,19 @@ const RoomSync = (() => {
         });
       } catch (_) {}
     } else if (mode === 'cloud' && roomCode) {
-      try {
-        const topic = topicName(roomCode);
-        await fetch(`https://ntfy.sh/${topic}`, {
-          method: 'POST',
-          body: JSON.stringify(msg),
-        });
-      } catch (_) {}
+      const topic = topicName(roomCode);
+      const bodyStr = JSON.stringify(msg);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(`https://ntfy.sh/${topic}`, {
+            method: 'POST',
+            body: bodyStr,
+          });
+          if (res.ok) break;
+          if (res.status === 429) await new Promise(r => setTimeout(r, 850));
+          else break;
+        } catch (_) { break; }
+      }
     }
     return msg;
   }
@@ -171,8 +215,8 @@ const RoomSync = (() => {
         total,
         data: dataUrl.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
       });
-      if (mode === 'cloud' && total > 3) {
-        await new Promise(r => setTimeout(r, 60));
+      if (mode === 'cloud' && total > 1) {
+        await new Promise(r => setTimeout(r, 220));
       }
     }
   }
@@ -204,6 +248,7 @@ const RoomSync = (() => {
     detectTransport,
     connect,
     disconnect,
+    pollNow,
     send,
     sendImage,
     onMessage,

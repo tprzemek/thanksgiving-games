@@ -935,9 +935,15 @@ const App = (() => {
   // DEDICATED PHONE CONTROLLER MODE (?room=XXXX&join=1)
   // =========================================================================
   function runPhoneController(roomCode) {
+    const ME_KEY = `tg26_me_${roomCode}`;
     let me = null;
+    try {
+      const saved = sessionStorage.getItem(ME_KEY);
+      if (saved) me = JSON.parse(saved);
+    } catch (_) {}
     let hostState = { game: null, phase: 'hub', payload: {}, leaderboard: [] };
     let submittedKey = '';
+    let mySubmittedClonePrompt = '';
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
@@ -953,6 +959,37 @@ const App = (() => {
       const k = prompt || 'turkey';
       if (!localGenCache[k]) localGenCache[k] = AIArt.renderDataURL(k, 440, 300).dataUrl;
       return localGenCache[k];
+    }
+
+    function normalizeResults(payload) {
+      const merged = new Map();
+      // 1. Atomic compact results embedded directly inside HOST_STATE (works in 1 packet on ntfy.sh!)
+      if (Array.isArray(payload.results)) {
+        for (const r of payload.results) {
+          merged.set(r.id, {
+            rank: r.rk,
+            playerId: r.id,
+            playerName: r.n,
+            avatar: r.av || '🦃',
+            prompt: r.p || '',
+            score: r.s,
+            pointsAwarded: r.pts,
+            comment: r.c || '',
+            imgSource: r.src || 'builtin',
+            imgUrl: r.url || null,
+            imgKey: r.k || null,
+            breakdown: [],
+          });
+        }
+      }
+      // 2. Merge any optional per-item CLONE_RESULT_ITEM messages
+      const byRound = cloneResultsByRound[payload.roundId];
+      if (byRound) {
+        for (const [pid, item] of byRound.entries()) {
+          merged.set(pid, { ...(merged.get(pid) || {}), ...item });
+        }
+      }
+      return Array.from(merged.values()).sort((a, b) => a.rank - b.rank);
     }
 
     function getPhoneCloneImageHtml(payload) {
@@ -1007,20 +1044,45 @@ const App = (() => {
     }
 
     RoomSync.connect(roomCode);
+    if (me) {
+      // Re-announce saved session so Host stays in sync after a phone reload
+      RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
+    }
     RoomSync.onMessage((msg) => {
       if (msg.type === 'HOST_STATE') {
         hostState = msg;
         renderPhone();
+      } else if (msg.type === 'CLONE_RESULTS_BATCH' && msg.roundId && Array.isArray(msg.items)) {
+        if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
+        for (const r of msg.items) {
+          cloneResultsByRound[msg.roundId].set(r.id, {
+            rank: r.rk,
+            playerId: r.id,
+            playerName: r.n,
+            avatar: r.av || '🦃',
+            prompt: r.p || '',
+            score: r.s,
+            pointsAwarded: r.pts,
+            comment: r.c || '',
+            imgSource: r.src || 'builtin',
+            imgUrl: r.url || null,
+            imgKey: r.k || null,
+            breakdown: [],
+          });
+        }
+        if (hostState.game === 'promptClone' && hostState.phase === 'results') {
+          lastViewKey = '';
+          renderPhone();
+        }
       } else if (msg.type === 'CLONE_RESULT_ITEM' && msg.roundId) {
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
         cloneResultsByRound[msg.roundId].set(msg.playerId, msg);
         if (hostState.game === 'promptClone' && hostState.phase === 'results') {
-          lastViewKey = ''; // Force gallery refresh as each result arrives
+          lastViewKey = '';
           renderPhone();
         }
       } else if (msg.type === 'IMG_READY' && msg.imgKey && msg.dataUrl) {
         receivedImages[msg.imgKey] = msg.dataUrl;
-        // Update any live <img> tag waiting for this chunked image without wiping textareas!
         const liveImg = document.querySelector(`img[data-img-key="${CSS.escape(msg.imgKey)}"]`);
         if (liveImg) {
           liveImg.src = msg.dataUrl;
@@ -1039,7 +1101,6 @@ const App = (() => {
     function renderPhone() {
       const app = document.getElementById('app');
       if (!me) {
-        // Never wipe the Join form if a HOST_STATE arrives while guest is typing their name!
         if (lastViewKey === 'join') return;
         lastViewKey = 'join';
         app.innerHTML = `
@@ -1090,6 +1151,7 @@ const App = (() => {
             ageGroup: document.getElementById('j-age').value,
             avatar: chosenAvatar,
           };
+          try { sessionStorage.setItem(ME_KEY, JSON.stringify(me)); } catch (_) {}
           lastViewKey = '';
           SoundFX.ding();
           RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
@@ -1112,6 +1174,7 @@ const App = (() => {
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
+        mySubmittedClonePrompt = '';
       }
       if (game === 'spotTheBot' && phase === 'submit' && activeBotRound !== botRoundKey) {
         activeBotRound = botRoundKey;
@@ -1120,14 +1183,14 @@ const App = (() => {
 
       const cloneAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === cloneRoundKey;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
+      const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
         viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
       } else if (game === 'promptClone' && phase === 'results') {
-        const resCount = cloneResultsByRound[payload.roundId]?.size || 0;
-        viewKey = `promptClone:results:${cloneRoundKey}:${resCount}`;
+        viewKey = `promptClone:results:${cloneRoundKey}:${cloneResultItems.length}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
         viewKey = `spotTheBot:submit:${botRoundKey}:${botAlready ? 'done' : 'edit'}`;
       }
@@ -1145,12 +1208,19 @@ const App = (() => {
 
       if (game === 'promptClone' && phase === 'writing') {
         const imgHtml = getPhoneCloneImageHtml(payload);
+        const myPreviewUrl = mySubmittedClonePrompt ? getLocalArt(mySubmittedClonePrompt) : '';
         body = cloneAlready ? `
           <div class="card center stack">
-            <div style="font-size:3rem;">🔒✨</div>
-            <h2>Prompt Locked In!</h2>
-            <p class="small muted">Waiting for everyone else—your AI image &amp; results gallery will appear right here automatically!</p>
-            <div id="phone-target-slot">${imgHtml}</div>
+            <div style="font-size:2.4rem;">🔒🎨</div>
+            <h2 style="margin:0;">Prompt Locked In!</h2>
+            ${myPreviewUrl ? `
+              <p class="xs muted" style="margin:0;">Instant preview of what your prompt drew (full gallery &amp; scores appear when Host finishes grading!):</p>
+              <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
+              <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(mySubmittedClonePrompt)}"</em></p>
+            ` : `
+              <p class="small muted">Waiting for everyone else—your AI image &amp; full results gallery will appear right here automatically!</p>
+              <div id="phone-target-slot">${imgHtml}</div>
+            `}
           </div>` : `
           <div class="card stack">
             <div class="row-between">
@@ -1175,16 +1245,24 @@ const App = (() => {
             <p class="small muted" style="margin:0;">${esc(payload.gradingStatus || 'Painting every prompt and grading resemblance...')}</p>
           </div>`;
       } else if (game === 'promptClone' && phase === 'results') {
-        const map = cloneResultsByRound[payload.roundId];
-        const items = map ? Array.from(map.values()).sort((a, b) => a.rank - b.rank) : [];
+        const items = cloneResultItems;
+        const winner = items[0] || null;
         const myItem = items.find(r => r.playerId === me.id);
         const imgHtml = getPhoneCloneImageHtml(payload);
         body = `
           <div class="stack fade-in">
+            ${winner ? `
+              <div class="card center stack-sm" style="border:2px solid var(--gold);">
+                <div style="font-size:2.2rem;">👑🏆</div>
+                <h2 style="margin:0;">Winner: ${winner.avatar || '🦃'} ${esc(winner.playerName)} (${winner.score}% Match!)</h2>
+                <p class="xs muted" style="margin:0;">Scroll down to see everyone's AI images, prompts, and scores!</p>
+              </div>
+            ` : ''}
+
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">${items.length}/${payload.totalResults || items.length} Results</span>
+                <span class="tag tag-gold">${items.length} Participants</span>
               </div>
               ${imgHtml}
               ${payload.originalPrompt ? `<p class="xs muted" style="margin:0;">Secret prompt: <strong>"${esc(payload.originalPrompt)}"</strong></p>` : ''}
@@ -1198,10 +1276,10 @@ const App = (() => {
             ` : ''}
 
             <div class="stack-sm">
-              <strong class="small">🏆 Full Family Results Gallery:</strong>
+              <strong class="small">🏆 Full Family Results Gallery (${items.length}):</strong>
               ${items.length
                 ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id)).join('')
-                : `<div class="card center small muted">Loading everyone's AI creations...</div>`}
+                : `<div class="card center small muted">Loading everyone's AI creations... Tap 🔄 Sync above if needed!</div>`}
             </div>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -1280,10 +1358,16 @@ const App = (() => {
         <div class="controller-shell stack">
           <div class="row-between">
             <span class="player-chip">${me.avatar} ${esc(me.name)} <span class="pts" id="phone-score-pts">${myScore} pts</span></span>
-            <span class="tag mono">ROOM ${esc(roomCode)}</span>
+            <div class="row" style="gap:6px;">
+              <button class="btn btn-sm" id="p-sync-btn" title="Sync latest game state" style="min-height:30px;padding:4px 9px;font-size:0.78rem;">🔄 Sync</button>
+              <span class="tag mono">ROOM ${esc(roomCode)}</span>
+            </div>
           </div>
           ${body}
         </div>`;
+
+      const syncBtn = document.getElementById('p-sync-btn');
+      if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(); };
 
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');
@@ -1299,9 +1383,18 @@ const App = (() => {
           const val = pCloneIn.value.trim();
           if (!val) return;
           submittedKey = cloneRoundKey;
+          mySubmittedClonePrompt = val;
           cloneDraft = '';
           SoundFX.ding();
-          RoomSync.send({ type: 'ACTION', playerId: me.id, action: 'SUBMIT_CLONE_PROMPT', value: val });
+          RoomSync.send({
+            type: 'ACTION',
+            playerId: me.id,
+            playerName: me.name,
+            avatar: me.avatar,
+            ageGroup: me.ageGroup,
+            action: 'SUBMIT_CLONE_PROMPT',
+            value: val,
+          });
           renderPhone();
         };
       }
@@ -1317,7 +1410,15 @@ const App = (() => {
           submittedKey = botRoundKey;
           botDraft = '';
           SoundFX.ding();
-          RoomSync.send({ type: 'ACTION', playerId: me.id, action: 'SUBMIT_BOT_ANSWER', value: val });
+          RoomSync.send({
+            type: 'ACTION',
+            playerId: me.id,
+            playerName: me.name,
+            avatar: me.avatar,
+            ageGroup: me.ageGroup,
+            action: 'SUBMIT_BOT_ANSWER',
+            value: val,
+          });
           renderPhone();
         };
       }

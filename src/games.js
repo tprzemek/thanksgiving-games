@@ -82,7 +82,29 @@ const Games = (() => {
       return `<img src="${targetArt.dataUrl}" alt="Target AI Image" />`;
     }
 
+    function toCompactResult(r, i) {
+      const item = {
+        rk: i,
+        id: r.player.id,
+        n: String(r.player.name || 'Player').slice(0, 18),
+        av: r.player.avatar || '🦃',
+        p: String(r.prompt || '').slice(0, 140),
+        s: r.score,
+        pts: r.pointsAwarded,
+        c: String(r.comment || '').slice(0, 80),
+        src: r.imgSource || 'builtin',
+      };
+      if (r.aiUrl) item.url = r.aiUrl;
+      if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
+      return item;
+    }
+
     function broadcastPhoneState() {
+      // Embed results directly in HOST_STATE only if <= 4 players (keeps packet safely < 1.8KB for ntfy.sh!)
+      const inlineResults = (phase === 'results' && gradedResults.length <= 4)
+        ? gradedResults.map((r, i) => toCompactResult(r, i))
+        : null;
+
       App.broadcastHostState('promptClone', phase, {
         roundId,
         challengeId: customTargetImg ? null : target.id,
@@ -96,30 +118,29 @@ const Games = (() => {
         gradingStatus,
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
         totalResults: phase === 'results' ? gradedResults.length : 0,
+        results: inlineResults,
       });
     }
 
     async function broadcastResultsToPhones() {
+      // Always stream results in tiny batches of 3 (< 1.1KB each) so even 10-20+ players pass ntfy.sh 4KB limit reliably!
+      const BATCH = 3;
+      const compactAll = gradedResults.map((r, i) => toCompactResult(r, i));
+      for (let i = 0; i < compactAll.length; i += BATCH) {
+        await RoomSync.send({
+          type: 'CLONE_RESULTS_BATCH',
+          roundId,
+          items: compactAll.slice(i, i + BATCH),
+        });
+        if (RoomSync.getMode() === 'cloud' && i + BATCH < compactAll.length) {
+          await new Promise(r => setTimeout(r, 260));
+        }
+      }
+      // Stream any real base64 AI images (Gemini/OpenAI) via chunked transfer
       for (let i = 0; i < gradedResults.length; i++) {
         const r = gradedResults[i];
-        const imgKey = r.aiDataUrl ? `res_${roundId}_${r.player.id}` : null;
-        await RoomSync.send({
-          type: 'CLONE_RESULT_ITEM',
-          roundId,
-          rank: i,
-          playerId: r.player.id,
-          playerName: r.player.name,
-          avatar: r.player.avatar,
-          prompt: r.prompt,
-          score: r.score,
-          pointsAwarded: r.pointsAwarded,
-          comment: r.comment,
-          breakdown: r.breakdown,
-          imgSource: r.imgSource,
-          imgUrl: r.aiUrl || null,
-          imgKey,
-        });
-        if (imgKey && r.aiDataUrl) {
+        if (r.aiDataUrl) {
+          const imgKey = `res_${roundId}_${r.player.id}`;
           const thumb = await makeThumb(r.aiDataUrl);
           if (thumb) await RoomSync.sendImage(imgKey, thumb);
         }
@@ -129,7 +150,23 @@ const Games = (() => {
     function onPhoneAction(msg) {
       if (phase !== 'writing') return;
       if (msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.value) {
-        submissions[msg.playerId] = { text: String(msg.value).trim(), ts: Date.now() };
+        // Ensure submitting guest always exists on the Host roster even if JOIN arrived before a Host refresh
+        let p = App.getPlayers().find(x => x.id === msg.playerId);
+        if (!p) {
+          p = App.addPlayer({
+            id: msg.playerId,
+            name: msg.playerName || 'Guest',
+            ageGroup: msg.ageGroup || 'adult',
+            avatar: msg.avatar || '🦃',
+            remote: true,
+          });
+        }
+        submissions[msg.playerId] = {
+          text: String(msg.value).trim(),
+          playerName: p ? p.name : (msg.playerName || 'Guest'),
+          avatar: p ? p.avatar : (msg.avatar || '🦃'),
+          ts: Date.now(),
+        };
         SoundFX.pop();
         broadcastPhoneState();
         render();
@@ -177,13 +214,18 @@ const Games = (() => {
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
       const players = App.getPlayers();
-      const submittingPlayers = players.filter(p => submissions[p.id] && submissions[p.id].text);
+      // Grade EVERY submission received — never drop any participant!
+      const entries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
       const results = [];
 
-      for (let i = 0; i < submittingPlayers.length; i++) {
-        const p = submittingPlayers[i];
-        const sub = submissions[p.id];
-        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${submittingPlayers.length})...`;
+      for (let i = 0; i < entries.length; i++) {
+        const [pid, sub] = entries[i];
+        const p = players.find(x => x.id === pid) || {
+          id: pid,
+          name: sub.playerName || 'Player',
+          avatar: sub.avatar || '🦃',
+        };
+        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${entries.length})...`;
         broadcastPhoneState();
         const stEl = document.getElementById('clone-grading-status');
         if (stEl) stEl.textContent = gradingStatus;
@@ -237,7 +279,6 @@ const Games = (() => {
       }
       broadcastPhoneState();
       render();
-      // Stream every participant's result card + AI image to all connected phones!
       broadcastResultsToPhones();
     }
 

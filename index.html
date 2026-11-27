@@ -2526,6 +2526,8 @@ const RoomSync = (() => {
   let lanBaseUrl = '';
   let es = null;
   let bc = null;
+  let pollTimer = null;
+  let wakeHandler = null;
   let listeners = [];
   let seenIds = new Set();
   const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
@@ -2535,7 +2537,7 @@ const RoomSync = (() => {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 600) {
+    if (seenIds.size > 800) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
@@ -2594,6 +2596,25 @@ const RoomSync = (() => {
     return 'tgfeast26_' + (code || 'DEMO').toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
+  async function pollNow() {
+    if (mode !== 'cloud' || !roomCode) return;
+    try {
+      const topic = topicName(roomCode);
+      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=5m`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const text = await res.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const outer = JSON.parse(line);
+          if (outer && outer.message) {
+            emit(JSON.parse(outer.message));
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   function connect(code) {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
@@ -2615,7 +2636,7 @@ const RoomSync = (() => {
     } else if (mode === 'cloud') {
       try {
         const topic = topicName(roomCode);
-        es = new EventSource(`https://ntfy.sh/${topic}/sse`);
+        es = new EventSource(`https://ntfy.sh/${topic}/sse?since=5m`);
         es.onmessage = (ev) => {
           try {
             const outer = JSON.parse(ev.data);
@@ -2626,6 +2647,17 @@ const RoomSync = (() => {
         };
         es.onerror = () => {};
       } catch (_) {}
+
+      // Gentle safety poll + instant wake poll for mobile Safari/Chrome sleeping tabs
+      pollNow();
+      pollTimer = setInterval(() => {
+        if (typeof document === 'undefined' || !document.hidden) pollNow();
+      }, 4000);
+      if (typeof document !== 'undefined') {
+        wakeHandler = () => { if (!document.hidden) pollNow(); };
+        document.addEventListener('visibilitychange', wakeHandler);
+        window.addEventListener('focus', wakeHandler);
+      }
     }
 
     return roomCode;
@@ -2634,6 +2666,12 @@ const RoomSync = (() => {
   function disconnect() {
     if (es) { try { es.close(); } catch (_) {} es = null; }
     if (bc) { try { bc.close(); } catch (_) {} bc = null; }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (wakeHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', wakeHandler);
+      window.removeEventListener('focus', wakeHandler);
+      wakeHandler = null;
+    }
   }
 
   async function send(payload) {
@@ -2658,13 +2696,19 @@ const RoomSync = (() => {
         });
       } catch (_) {}
     } else if (mode === 'cloud' && roomCode) {
-      try {
-        const topic = topicName(roomCode);
-        await fetch(`https://ntfy.sh/${topic}`, {
-          method: 'POST',
-          body: JSON.stringify(msg),
-        });
-      } catch (_) {}
+      const topic = topicName(roomCode);
+      const bodyStr = JSON.stringify(msg);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(`https://ntfy.sh/${topic}`, {
+            method: 'POST',
+            body: bodyStr,
+          });
+          if (res.ok) break;
+          if (res.status === 429) await new Promise(r => setTimeout(r, 850));
+          else break;
+        } catch (_) { break; }
+      }
     }
     return msg;
   }
@@ -2682,8 +2726,8 @@ const RoomSync = (() => {
         total,
         data: dataUrl.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
       });
-      if (mode === 'cloud' && total > 3) {
-        await new Promise(r => setTimeout(r, 60));
+      if (mode === 'cloud' && total > 1) {
+        await new Promise(r => setTimeout(r, 220));
       }
     }
   }
@@ -2715,6 +2759,7 @@ const RoomSync = (() => {
     detectTransport,
     connect,
     disconnect,
+    pollNow,
     send,
     sendImage,
     onMessage,
@@ -3004,7 +3049,29 @@ const Games = (() => {
       return `<img src="${targetArt.dataUrl}" alt="Target AI Image" />`;
     }
 
+    function toCompactResult(r, i) {
+      const item = {
+        rk: i,
+        id: r.player.id,
+        n: String(r.player.name || 'Player').slice(0, 18),
+        av: r.player.avatar || '🦃',
+        p: String(r.prompt || '').slice(0, 140),
+        s: r.score,
+        pts: r.pointsAwarded,
+        c: String(r.comment || '').slice(0, 80),
+        src: r.imgSource || 'builtin',
+      };
+      if (r.aiUrl) item.url = r.aiUrl;
+      if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
+      return item;
+    }
+
     function broadcastPhoneState() {
+      // Embed results directly in HOST_STATE only if <= 4 players (keeps packet safely < 1.8KB for ntfy.sh!)
+      const inlineResults = (phase === 'results' && gradedResults.length <= 4)
+        ? gradedResults.map((r, i) => toCompactResult(r, i))
+        : null;
+
       App.broadcastHostState('promptClone', phase, {
         roundId,
         challengeId: customTargetImg ? null : target.id,
@@ -3018,30 +3085,29 @@ const Games = (() => {
         gradingStatus,
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
         totalResults: phase === 'results' ? gradedResults.length : 0,
+        results: inlineResults,
       });
     }
 
     async function broadcastResultsToPhones() {
+      // Always stream results in tiny batches of 3 (< 1.1KB each) so even 10-20+ players pass ntfy.sh 4KB limit reliably!
+      const BATCH = 3;
+      const compactAll = gradedResults.map((r, i) => toCompactResult(r, i));
+      for (let i = 0; i < compactAll.length; i += BATCH) {
+        await RoomSync.send({
+          type: 'CLONE_RESULTS_BATCH',
+          roundId,
+          items: compactAll.slice(i, i + BATCH),
+        });
+        if (RoomSync.getMode() === 'cloud' && i + BATCH < compactAll.length) {
+          await new Promise(r => setTimeout(r, 260));
+        }
+      }
+      // Stream any real base64 AI images (Gemini/OpenAI) via chunked transfer
       for (let i = 0; i < gradedResults.length; i++) {
         const r = gradedResults[i];
-        const imgKey = r.aiDataUrl ? `res_${roundId}_${r.player.id}` : null;
-        await RoomSync.send({
-          type: 'CLONE_RESULT_ITEM',
-          roundId,
-          rank: i,
-          playerId: r.player.id,
-          playerName: r.player.name,
-          avatar: r.player.avatar,
-          prompt: r.prompt,
-          score: r.score,
-          pointsAwarded: r.pointsAwarded,
-          comment: r.comment,
-          breakdown: r.breakdown,
-          imgSource: r.imgSource,
-          imgUrl: r.aiUrl || null,
-          imgKey,
-        });
-        if (imgKey && r.aiDataUrl) {
+        if (r.aiDataUrl) {
+          const imgKey = `res_${roundId}_${r.player.id}`;
           const thumb = await makeThumb(r.aiDataUrl);
           if (thumb) await RoomSync.sendImage(imgKey, thumb);
         }
@@ -3051,7 +3117,23 @@ const Games = (() => {
     function onPhoneAction(msg) {
       if (phase !== 'writing') return;
       if (msg.action === 'SUBMIT_CLONE_PROMPT' && msg.playerId && msg.value) {
-        submissions[msg.playerId] = { text: String(msg.value).trim(), ts: Date.now() };
+        // Ensure submitting guest always exists on the Host roster even if JOIN arrived before a Host refresh
+        let p = App.getPlayers().find(x => x.id === msg.playerId);
+        if (!p) {
+          p = App.addPlayer({
+            id: msg.playerId,
+            name: msg.playerName || 'Guest',
+            ageGroup: msg.ageGroup || 'adult',
+            avatar: msg.avatar || '🦃',
+            remote: true,
+          });
+        }
+        submissions[msg.playerId] = {
+          text: String(msg.value).trim(),
+          playerName: p ? p.name : (msg.playerName || 'Guest'),
+          avatar: p ? p.avatar : (msg.avatar || '🦃'),
+          ts: Date.now(),
+        };
         SoundFX.pop();
         broadcastPhoneState();
         render();
@@ -3099,13 +3181,18 @@ const Games = (() => {
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
       const players = App.getPlayers();
-      const submittingPlayers = players.filter(p => submissions[p.id] && submissions[p.id].text);
+      // Grade EVERY submission received — never drop any participant!
+      const entries = Object.entries(submissions).filter(([, sub]) => sub && sub.text);
       const results = [];
 
-      for (let i = 0; i < submittingPlayers.length; i++) {
-        const p = submittingPlayers[i];
-        const sub = submissions[p.id];
-        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${submittingPlayers.length})...`;
+      for (let i = 0; i < entries.length; i++) {
+        const [pid, sub] = entries[i];
+        const p = players.find(x => x.id === pid) || {
+          id: pid,
+          name: sub.playerName || 'Player',
+          avatar: sub.avatar || '🦃',
+        };
+        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${entries.length})...`;
         broadcastPhoneState();
         const stEl = document.getElementById('clone-grading-status');
         if (stEl) stEl.textContent = gradingStatus;
@@ -3159,7 +3246,6 @@ const Games = (() => {
       }
       broadcastPhoneState();
       render();
-      // Stream every participant's result card + AI image to all connected phones!
       broadcastResultsToPhones();
     }
 
@@ -5784,9 +5870,15 @@ const App = (() => {
   // DEDICATED PHONE CONTROLLER MODE (?room=XXXX&join=1)
   // =========================================================================
   function runPhoneController(roomCode) {
+    const ME_KEY = `tg26_me_${roomCode}`;
     let me = null;
+    try {
+      const saved = sessionStorage.getItem(ME_KEY);
+      if (saved) me = JSON.parse(saved);
+    } catch (_) {}
     let hostState = { game: null, phase: 'hub', payload: {}, leaderboard: [] };
     let submittedKey = '';
+    let mySubmittedClonePrompt = '';
     let lastViewKey = '';
     let activeCloneRound = '';
     let cloneDraft = '';
@@ -5802,6 +5894,37 @@ const App = (() => {
       const k = prompt || 'turkey';
       if (!localGenCache[k]) localGenCache[k] = AIArt.renderDataURL(k, 440, 300).dataUrl;
       return localGenCache[k];
+    }
+
+    function normalizeResults(payload) {
+      const merged = new Map();
+      // 1. Atomic compact results embedded directly inside HOST_STATE (works in 1 packet on ntfy.sh!)
+      if (Array.isArray(payload.results)) {
+        for (const r of payload.results) {
+          merged.set(r.id, {
+            rank: r.rk,
+            playerId: r.id,
+            playerName: r.n,
+            avatar: r.av || '🦃',
+            prompt: r.p || '',
+            score: r.s,
+            pointsAwarded: r.pts,
+            comment: r.c || '',
+            imgSource: r.src || 'builtin',
+            imgUrl: r.url || null,
+            imgKey: r.k || null,
+            breakdown: [],
+          });
+        }
+      }
+      // 2. Merge any optional per-item CLONE_RESULT_ITEM messages
+      const byRound = cloneResultsByRound[payload.roundId];
+      if (byRound) {
+        for (const [pid, item] of byRound.entries()) {
+          merged.set(pid, { ...(merged.get(pid) || {}), ...item });
+        }
+      }
+      return Array.from(merged.values()).sort((a, b) => a.rank - b.rank);
     }
 
     function getPhoneCloneImageHtml(payload) {
@@ -5856,20 +5979,45 @@ const App = (() => {
     }
 
     RoomSync.connect(roomCode);
+    if (me) {
+      // Re-announce saved session so Host stays in sync after a phone reload
+      RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
+    }
     RoomSync.onMessage((msg) => {
       if (msg.type === 'HOST_STATE') {
         hostState = msg;
         renderPhone();
+      } else if (msg.type === 'CLONE_RESULTS_BATCH' && msg.roundId && Array.isArray(msg.items)) {
+        if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
+        for (const r of msg.items) {
+          cloneResultsByRound[msg.roundId].set(r.id, {
+            rank: r.rk,
+            playerId: r.id,
+            playerName: r.n,
+            avatar: r.av || '🦃',
+            prompt: r.p || '',
+            score: r.s,
+            pointsAwarded: r.pts,
+            comment: r.c || '',
+            imgSource: r.src || 'builtin',
+            imgUrl: r.url || null,
+            imgKey: r.k || null,
+            breakdown: [],
+          });
+        }
+        if (hostState.game === 'promptClone' && hostState.phase === 'results') {
+          lastViewKey = '';
+          renderPhone();
+        }
       } else if (msg.type === 'CLONE_RESULT_ITEM' && msg.roundId) {
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
         cloneResultsByRound[msg.roundId].set(msg.playerId, msg);
         if (hostState.game === 'promptClone' && hostState.phase === 'results') {
-          lastViewKey = ''; // Force gallery refresh as each result arrives
+          lastViewKey = '';
           renderPhone();
         }
       } else if (msg.type === 'IMG_READY' && msg.imgKey && msg.dataUrl) {
         receivedImages[msg.imgKey] = msg.dataUrl;
-        // Update any live <img> tag waiting for this chunked image without wiping textareas!
         const liveImg = document.querySelector(`img[data-img-key="${CSS.escape(msg.imgKey)}"]`);
         if (liveImg) {
           liveImg.src = msg.dataUrl;
@@ -5888,7 +6036,6 @@ const App = (() => {
     function renderPhone() {
       const app = document.getElementById('app');
       if (!me) {
-        // Never wipe the Join form if a HOST_STATE arrives while guest is typing their name!
         if (lastViewKey === 'join') return;
         lastViewKey = 'join';
         app.innerHTML = `
@@ -5939,6 +6086,7 @@ const App = (() => {
             ageGroup: document.getElementById('j-age').value,
             avatar: chosenAvatar,
           };
+          try { sessionStorage.setItem(ME_KEY, JSON.stringify(me)); } catch (_) {}
           lastViewKey = '';
           SoundFX.ding();
           RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
@@ -5961,6 +6109,7 @@ const App = (() => {
       if (game === 'promptClone' && phase === 'writing' && activeCloneRound !== cloneRoundKey) {
         activeCloneRound = cloneRoundKey;
         cloneDraft = '';
+        mySubmittedClonePrompt = '';
       }
       if (game === 'spotTheBot' && phase === 'submit' && activeBotRound !== botRoundKey) {
         activeBotRound = botRoundKey;
@@ -5969,14 +6118,14 @@ const App = (() => {
 
       const cloneAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === cloneRoundKey;
       const botAlready = (payload.submittedIds || []).includes(me.id) || submittedKey === botRoundKey;
+      const cloneResultItems = (game === 'promptClone' && phase === 'results') ? normalizeResults(payload) : [];
 
       // Compute stable view key so another player's submission NEVER wipes this player's active textarea or dismisses their keyboard!
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
         viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
       } else if (game === 'promptClone' && phase === 'results') {
-        const resCount = cloneResultsByRound[payload.roundId]?.size || 0;
-        viewKey = `promptClone:results:${cloneRoundKey}:${resCount}`;
+        viewKey = `promptClone:results:${cloneRoundKey}:${cloneResultItems.length}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
         viewKey = `spotTheBot:submit:${botRoundKey}:${botAlready ? 'done' : 'edit'}`;
       }
@@ -5994,12 +6143,19 @@ const App = (() => {
 
       if (game === 'promptClone' && phase === 'writing') {
         const imgHtml = getPhoneCloneImageHtml(payload);
+        const myPreviewUrl = mySubmittedClonePrompt ? getLocalArt(mySubmittedClonePrompt) : '';
         body = cloneAlready ? `
           <div class="card center stack">
-            <div style="font-size:3rem;">🔒✨</div>
-            <h2>Prompt Locked In!</h2>
-            <p class="small muted">Waiting for everyone else—your AI image &amp; results gallery will appear right here automatically!</p>
-            <div id="phone-target-slot">${imgHtml}</div>
+            <div style="font-size:2.4rem;">🔒🎨</div>
+            <h2 style="margin:0;">Prompt Locked In!</h2>
+            ${myPreviewUrl ? `
+              <p class="xs muted" style="margin:0;">Instant preview of what your prompt drew (full gallery &amp; scores appear when Host finishes grading!):</p>
+              <div class="art-frame"><img src="${myPreviewUrl}" alt="Your generated preview" /></div>
+              <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(mySubmittedClonePrompt)}"</em></p>
+            ` : `
+              <p class="small muted">Waiting for everyone else—your AI image &amp; full results gallery will appear right here automatically!</p>
+              <div id="phone-target-slot">${imgHtml}</div>
+            `}
           </div>` : `
           <div class="card stack">
             <div class="row-between">
@@ -6024,16 +6180,24 @@ const App = (() => {
             <p class="small muted" style="margin:0;">${esc(payload.gradingStatus || 'Painting every prompt and grading resemblance...')}</p>
           </div>`;
       } else if (game === 'promptClone' && phase === 'results') {
-        const map = cloneResultsByRound[payload.roundId];
-        const items = map ? Array.from(map.values()).sort((a, b) => a.rank - b.rank) : [];
+        const items = cloneResultItems;
+        const winner = items[0] || null;
         const myItem = items.find(r => r.playerId === me.id);
         const imgHtml = getPhoneCloneImageHtml(payload);
         body = `
           <div class="stack fade-in">
+            ${winner ? `
+              <div class="card center stack-sm" style="border:2px solid var(--gold);">
+                <div style="font-size:2.2rem;">👑🏆</div>
+                <h2 style="margin:0;">Winner: ${winner.avatar || '🦃'} ${esc(winner.playerName)} (${winner.score}% Match!)</h2>
+                <p class="xs muted" style="margin:0;">Scroll down to see everyone's AI images, prompts, and scores!</p>
+              </div>
+            ` : ''}
+
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">${items.length}/${payload.totalResults || items.length} Results</span>
+                <span class="tag tag-gold">${items.length} Participants</span>
               </div>
               ${imgHtml}
               ${payload.originalPrompt ? `<p class="xs muted" style="margin:0;">Secret prompt: <strong>"${esc(payload.originalPrompt)}"</strong></p>` : ''}
@@ -6047,10 +6211,10 @@ const App = (() => {
             ` : ''}
 
             <div class="stack-sm">
-              <strong class="small">🏆 Full Family Results Gallery:</strong>
+              <strong class="small">🏆 Full Family Results Gallery (${items.length}):</strong>
               ${items.length
                 ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id)).join('')
-                : `<div class="card center small muted">Loading everyone's AI creations...</div>`}
+                : `<div class="card center small muted">Loading everyone's AI creations... Tap 🔄 Sync above if needed!</div>`}
             </div>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
@@ -6129,10 +6293,16 @@ const App = (() => {
         <div class="controller-shell stack">
           <div class="row-between">
             <span class="player-chip">${me.avatar} ${esc(me.name)} <span class="pts" id="phone-score-pts">${myScore} pts</span></span>
-            <span class="tag mono">ROOM ${esc(roomCode)}</span>
+            <div class="row" style="gap:6px;">
+              <button class="btn btn-sm" id="p-sync-btn" title="Sync latest game state" style="min-height:30px;padding:4px 9px;font-size:0.78rem;">🔄 Sync</button>
+              <span class="tag mono">ROOM ${esc(roomCode)}</span>
+            </div>
           </div>
           ${body}
         </div>`;
+
+      const syncBtn = document.getElementById('p-sync-btn');
+      if (syncBtn) syncBtn.onclick = () => { SoundFX.pop(); RoomSync.pollNow(); };
 
       // Bind dynamic phone controller actions
       const pCloneIn = document.getElementById('p-clone-in');
@@ -6148,9 +6318,18 @@ const App = (() => {
           const val = pCloneIn.value.trim();
           if (!val) return;
           submittedKey = cloneRoundKey;
+          mySubmittedClonePrompt = val;
           cloneDraft = '';
           SoundFX.ding();
-          RoomSync.send({ type: 'ACTION', playerId: me.id, action: 'SUBMIT_CLONE_PROMPT', value: val });
+          RoomSync.send({
+            type: 'ACTION',
+            playerId: me.id,
+            playerName: me.name,
+            avatar: me.avatar,
+            ageGroup: me.ageGroup,
+            action: 'SUBMIT_CLONE_PROMPT',
+            value: val,
+          });
           renderPhone();
         };
       }
@@ -6166,7 +6345,15 @@ const App = (() => {
           submittedKey = botRoundKey;
           botDraft = '';
           SoundFX.ding();
-          RoomSync.send({ type: 'ACTION', playerId: me.id, action: 'SUBMIT_BOT_ANSWER', value: val });
+          RoomSync.send({
+            type: 'ACTION',
+            playerId: me.id,
+            playerName: me.name,
+            avatar: me.avatar,
+            ageGroup: me.ageGroup,
+            action: 'SUBMIT_BOT_ANSWER',
+            value: val,
+          });
           renderPhone();
         };
       }

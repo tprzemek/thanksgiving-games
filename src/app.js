@@ -133,10 +133,13 @@ const App = (() => {
     return document.getElementById('stage');
   }
 
+  let hostStateSeq = 0;
+
   function broadcastHostState(game, phase, payload = {}) {
     lastHostBroadcast = { game, phase, payload };
     RoomSync.send({
       type: 'HOST_STATE',
+      stateSeq: ++hostStateSeq,
       game,
       phase,
       payload,
@@ -1230,19 +1233,33 @@ const App = (() => {
       }
     }
 
+    let lastHostSender = '';
+    let lastHostSeq = 0;
+
     RoomSync.connect(roomCode);
     if (me) {
       // Re-announce saved session so Host stays in sync after a phone reload
       RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
     }
+    RoomSync.onStatus((ok) => {
+      const dot = document.getElementById('p-conn-dot');
+      if (dot) dot.textContent = ok ? '🟢' : '🟡';
+    });
     RoomSync.onMessage((msg) => {
       if (msg.type === 'HOST_STATE') {
+        if (msg.sender && msg.sender === lastHostSender && msg.stateSeq && msg.stateSeq < lastHostSeq) {
+          return;
+        }
+        if (msg.sender) {
+          if (msg.sender !== lastHostSender) { lastHostSender = msg.sender; lastHostSeq = 0; }
+          if (msg.stateSeq) lastHostSeq = msg.stateSeq;
+        }
         hostState = msg;
         if (msg.game === 'promptClone' && msg.phase === 'results' && msg.payload?.resultsUrl) {
           fetchAtomicResults(msg.payload.roundId, msg.payload.resultsUrl);
         }
         renderPhone();
-      } else if (msg.type === 'CLONE_RESULTS_BATCH' && msg.roundId && Array.isArray(msg.items)) {
+      } else if ((msg.type === 'CLONE_RESULTS_FULL' || msg.type === 'CLONE_RESULTS_BATCH') && msg.roundId && Array.isArray(msg.items)) {
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
         for (const r of msg.items) {
           cloneResultsByRound[msg.roundId].set(r.id, {
@@ -1258,7 +1275,7 @@ const App = (() => {
             imgUrl: r.url || null,
             imgKey: r.k || null,
             autoCollected: !!r.auto,
-            breakdown: [],
+            breakdown: Array.isArray(r.bd) ? r.bd : [],
           });
         }
         if (hostState.game === 'promptClone' && hostState.phase === 'results') {
@@ -1600,7 +1617,7 @@ const App = (() => {
             <span class="player-chip">${me.avatar} ${esc(me.name)} <span class="pts" id="phone-score-pts">${myScore} pts</span></span>
             <div class="row" style="gap:6px;">
               <button class="btn btn-sm" id="p-sync-btn" title="Sync latest game state" style="min-height:30px;padding:4px 9px;font-size:0.78rem;">🔄 Sync</button>
-              <span class="tag mono">ROOM ${esc(roomCode)}</span>
+              <span class="tag mono"><span id="p-conn-dot">${RoomSync.isConnected() ? '🟢' : '🟡'}</span> ROOM ${esc(roomCode)}</span>
             </div>
           </div>
           ${body}
@@ -1709,12 +1726,21 @@ const App = (() => {
     try { localStorage.setItem(STORAGE_ROOM, code); } catch (_) {}
     RoomSync.connect(code);
 
+    let joinSyncTimer = null;
+    RoomSync.onStatus((ok) => {
+      if (ok) broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
+    });
     RoomSync.onMessage((msg) => {
       if (msg.type === 'JOIN' && msg.name) {
         addPlayer({ id: msg.playerId || msg.id, name: msg.name, ageGroup: msg.ageGroup || 'adult', avatar: msg.avatar, remote: true });
         SoundFX.ding();
-        // Send current game state to the newly joined phone
-        broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
+        // Coalesce JOIN replies so 10 phones scanning QR together trigger 1 clean retained HOST_STATE broadcast!
+        if (!joinSyncTimer) {
+          joinSyncTimer = setTimeout(() => {
+            joinSyncTimer = null;
+            broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
+          }, 220);
+        }
         if (!currentGameKey) renderHub();
         else if (currentGame && currentGame.render) currentGame.render();
         // Live-refresh QR modal if currently open so Host sees guests pop in immediately

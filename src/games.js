@@ -154,29 +154,27 @@ const Games = (() => {
     }
 
     async function broadcastResultsToPhones() {
-      // If atomic resultsUrl upload succeeded, phones fetch ALL ranked results in 1 GET request from HOST_STATE!
-      // Only fall back to CLONE_RESULTS_BATCH streaming if resultsUrl wasn't available (e.g. BroadcastChannel).
+      const fullItems = gradedResults.map((r, i) => ({
+        ...toCompactResult(r, i),
+        p: r.prompt || '',
+        c: r.comment || '',
+        bd: (r.breakdown || []).slice(0, 6),
+      }));
+      // Over unlimited real-time WSS MQTT (or BroadcastChannel), send ALL ranked results atomically (retained!)
       if (!resultsUrl) {
-        const BATCH = 3;
-        const compactAll = gradedResults.map((r, i) => toCompactResult(r, i));
-        for (let i = 0; i < compactAll.length; i += BATCH) {
-          await RoomSync.send({
-            type: 'CLONE_RESULTS_BATCH',
-            roundId,
-            items: compactAll.slice(i, i + BATCH),
-          });
-          if (RoomSync.getMode() === 'cloud' && i + BATCH < compactAll.length) {
-            await new Promise(r => setTimeout(r, 320));
-          }
-        }
+        await RoomSync.send({
+          type: 'CLONE_RESULTS_FULL',
+          roundId,
+          items: fullItems,
+        });
       }
-      // Only chunk fallback images that didn't get a direct sharedUrl
+      // Stream crisp 560px JPEGs for any AI images that don't have a LAN sharedUrl (retained on MQTT broker!)
       for (let i = 0; i < gradedResults.length; i++) {
         const r = gradedResults[i];
         if (r.aiDataUrl && !r.sharedUrl && !r.aiUrl) {
           const imgKey = `res_${roundId}_${r.player.id}`;
-          const thumb = await makeThumb(r.aiDataUrl, 340, 0.62);
-          if (thumb) await RoomSync.sendImage(imgKey, thumb);
+          const hiRes = r.hiResDataUrl || await makeThumb(r.aiDataUrl, 560, 0.76);
+          if (hiRes) await RoomSync.sendImage(imgKey, hiRes);
         }
       }
     }
@@ -249,6 +247,7 @@ const Games = (() => {
       timeLeft = durationSec;
       deadlineTs = Date.now() + durationSec * 1000;
       phase = 'writing';
+      if (RoomSync.clearRetained) RoomSync.clearRetained('results');
       if (customTargetImg && customTargetThumb && !customTargetUrl) {
         customTargetUrl = await RoomSync.uploadImage(customTargetThumb);
       }
@@ -287,13 +286,7 @@ const Games = (() => {
       render();
 
       const isCloud = RoomSync.getMode() === 'cloud';
-      const sweepMs = isCloud ? 4600 : 1500;
-      if (isCloud) {
-        // Actively poll ntfy.sh during the sweep so no phone submission sits unread on SSE hiccups
-        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 1400));
-        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 2800));
-        collectPolls.push(setTimeout(() => RoomSync.pollNow(false), 4100));
-      }
+      const sweepMs = isCloud ? 2600 : 1500;
 
       collectTimer = setTimeout(() => {
         clearCollectTimers();
@@ -369,6 +362,7 @@ const Games = (() => {
         const gen = AIArt.renderDataURL(sub.text, 440, 300);
         let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
         let sharedUrl = null;
+        let hiResDataUrl = null;
         let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
 
         try {
@@ -376,12 +370,15 @@ const Games = (() => {
           aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
           if (aiImg.error && !aiWarning) aiWarning = aiImg.error;
 
-          // 2. Upload crisp JPEG of any generated AI image in 1 single HTTP request so ALL 10+ phones see EVERY player's real Nano Banana image!
+          // 2. Share crisp 560px JPEG immediately to all 10+ phones (LAN upload OR retained WSS MQTT!)
           sharedUrl = aiImg.url || null;
           if (!sharedUrl && aiImg.dataUrl) {
-            const hiRes = await makeThumb(aiImg.dataUrl, 640, 0.78);
-            if (hiRes) {
-              sharedUrl = await RoomSync.uploadImage(hiRes);
+            hiResDataUrl = await makeThumb(aiImg.dataUrl, 560, 0.76);
+            if (hiResDataUrl) {
+              sharedUrl = await RoomSync.uploadImage(hiResDataUrl);
+              if (!sharedUrl) {
+                RoomSync.sendImage(`res_${roundId}_${p.id}`, hiResDataUrl);
+              }
             }
           }
 
@@ -413,6 +410,7 @@ const Games = (() => {
           dataUrl: gen.dataUrl,
           aiUrl: aiImg.url,
           aiDataUrl: aiImg.dataUrl,
+          hiResDataUrl,
           sharedUrl,
           imgSource: aiImg.source,
           autoCollected: !!sub.autoCollected,
@@ -423,8 +421,7 @@ const Games = (() => {
         gradingStatus = `🍌 Generated ${completedCount}/${gradingQueue.length} AI images (${p.name} done!)...`;
         const stEl = document.getElementById('clone-grading-status');
         if (stEl) stEl.textContent = gradingStatus;
-        // Broadcast progress every 3 players (keeps ntfy.sh POST count low for 10+ player games!)
-        if (completedCount % 3 === 0) scheduleBroadcastPhoneState(400);
+        scheduleBroadcastPhoneState(300);
       }
 
       // Dynamic 3-worker pool: processes 10+ players ~3x faster AND seamlessly picks up any late-arriving submission!
@@ -439,8 +436,6 @@ const Games = (() => {
       }
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, gradingQueue.length)) }, () => worker()));
 
-      // One final check in case a late submission arrived right as the last worker finished
-      if (RoomSync.getMode() === 'cloud') await RoomSync.pollNow(false);
       while (cursor < gradingQueue.length) {
         const i = cursor++;
         const [pid, sub] = gradingQueue[i];

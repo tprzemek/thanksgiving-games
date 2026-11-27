@@ -1,6 +1,5 @@
-// 3-Tier Multi-Device QR Room Sync (LAN Server -> Cloud Relay -> Local BroadcastChannel)
-// + Chunked Image Sync (stays safely under ntfy.sh 4KB message limit)
-// + Real AI Image Generation & Vision/LLM Bridge (Gemini / OpenAI / Pollinations / Built-In)
+// 3-Tier Multi-Device QR Room Sync (LAN Server -> Unlimited Real-Time WSS MQTT Cloud Relay -> Local BroadcastChannel)
+// + Real AI Image Generation & Vision/LLM Bridge (Gemini Nano Banana / OpenAI DALL-E 3 / Pollinations / Built-In)
 
 const RoomSync = (() => {
   const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -10,29 +9,101 @@ const RoomSync = (() => {
     return s;
   }
 
+  // Pure-JS MQTT 3.1.1 binary packet helpers (zero external dependencies, works natively over browser WSS!)
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  function mqttRemLen(len) {
+    const out = [];
+    do {
+      let d = len % 128;
+      len = Math.floor(len / 128);
+      if (len > 0) d |= 128;
+      out.push(d);
+    } while (len > 0);
+    return out;
+  }
+  function mqttStr(s) {
+    const b = enc.encode(s);
+    const out = new Uint8Array(2 + b.length);
+    out[0] = (b.length >> 8) & 0xff;
+    out[1] = b.length & 0xff;
+    out.set(b, 2);
+    return out;
+  }
+  function concatU8(parts) {
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+  function mqttConnectPkt(cid) {
+    const vh = concatU8([mqttStr('MQTT'), new Uint8Array([4, 0x02, 0, 45])]);
+    const pl = mqttStr(cid);
+    const rem = new Uint8Array(mqttRemLen(vh.length + pl.length));
+    return concatU8([new Uint8Array([0x10]), rem, vh, pl]);
+  }
+  function mqttSubPkt(pktId, topic) {
+    const vh = new Uint8Array([(pktId >> 8) & 0xff, pktId & 0xff]);
+    const pl = concatU8([mqttStr(topic), new Uint8Array([0])]);
+    const rem = new Uint8Array(mqttRemLen(vh.length + pl.length));
+    return concatU8([new Uint8Array([0x82]), rem, vh, pl]);
+  }
+  function mqttUnsubPkt(pktId, topic) {
+    const vh = new Uint8Array([(pktId >> 8) & 0xff, pktId & 0xff]);
+    const pl = mqttStr(topic);
+    const rem = new Uint8Array(mqttRemLen(vh.length + pl.length));
+    return concatU8([new Uint8Array([0xA2]), rem, vh, pl]);
+  }
+  function mqttPubPkt(topic, payloadStr, retain = false) {
+    const tb = mqttStr(topic);
+    const pb = payloadStr ? enc.encode(payloadStr) : new Uint8Array(0);
+    const rem = new Uint8Array(mqttRemLen(tb.length + pb.length));
+    return concatU8([new Uint8Array([retain ? 0x31 : 0x30]), rem, tb, pb]);
+  }
+
+  const MQTT_BROKERS = [
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://test.mosquitto.org:8081/mqtt',
+    'wss://broker.hivemq.com:8884/mqtt',
+  ];
+
   let mode = 'local'; // 'lan' | 'cloud' | 'local'
   let roomCode = '';
   let lanBaseUrl = '';
   let es = null;
   let bc = null;
-  let pollTimer = null;
+  let ws = null;
+  let mqttReady = false;
+  let brokerIdx = 0;
+  let pktCounter = 1;
+  let pingTimer = null;
+  let reconnectTimer = null;
   let wakeHandler = null;
+  let shouldRun = false;
+  let outbox = []; // { subTopic, bodyStr, retain }
+  let flushRunning = false;
   let listeners = [];
+  let statusListeners = [];
   let seenIds = new Set();
-  let lastServerTime = 0;
-  const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
-  const clientId = 'c_' + Math.random().toString(36).slice(2, 9);
+  const chunkBuffers = new Map();
+  const clientId = 'tg_' + Math.random().toString(36).slice(2, 10);
+
+  function notifyStatus() {
+    const ok = mode === 'lan' || mode === 'local' || mqttReady;
+    statusListeners.forEach(fn => { try { fn(ok, mode); } catch (_) {} });
+  }
 
   function emit(msg) {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 1500) {
+    if (seenIds.size > 2000) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
 
-    // Automatically reassemble chunked images into IMG_READY events
     if (msg.type === 'IMG_CHUNK' && msg.imgKey && typeof msg.idx === 'number' && msg.total) {
       let buf = chunkBuffers.get(msg.imgKey);
       if (!buf || buf.total !== msg.total) {
@@ -82,37 +153,165 @@ const RoomSync = (() => {
     return mode;
   }
 
-  function topicName(code) {
-    return 'tgfeast26_' + (code || 'DEMO').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  function roomPrefix() {
+    return 'tgfeast26/' + (roomCode || 'DEMO').toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
-  async function pollNow(fullHistory = false) {
-    if (mode !== 'cloud' || !roomCode) return;
+  async function flushOutbox() {
+    if (flushRunning || !mqttReady || !ws || ws.readyState !== 1) return;
+    flushRunning = true;
     try {
-      const topic = topicName(roomCode);
-      const since = (!fullHistory && lastServerTime > 0) ? String(Math.max(0, lastServerTime - 8)) : '5m';
-      const res = await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=${since}`, { cache: 'no-store' });
-      if (!res.ok) return;
-      const text = await res.text();
-      const lines = text.trim().split('\n').filter(Boolean);
-      for (const line of lines) {
+      while (outbox.length > 0 && mqttReady && ws && ws.readyState === 1) {
+        const item = outbox.shift();
         try {
-          const outer = JSON.parse(line);
-          if (outer && typeof outer.time === 'number' && outer.time > lastServerTime) {
-            lastServerTime = outer.time;
-          }
-          if (outer && outer.message) {
-            emit(JSON.parse(outer.message));
-          }
-        } catch (_) {}
+          ws.send(mqttPubPkt(roomPrefix() + '/' + item.subTopic, item.bodyStr, item.retain));
+        } catch (_) {
+          outbox.unshift(item);
+          break;
+        }
+        // Gently pace large image packets (~35KB) so 10 concurrent images stream smoothly to all 10+ phones!
+        if (item.bodyStr.length > 8000) {
+          await new Promise(r => setTimeout(r, 120));
+        }
       }
-    } catch (_) {}
+    } finally {
+      flushRunning = false;
+    }
+  }
+
+  function openMqttSocket() {
+    if (!shouldRun || mode !== 'cloud' || !roomCode) return;
+    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    mqttReady = false;
+    notifyStatus();
+
+    const url = MQTT_BROKERS[brokerIdx % MQTT_BROKERS.length];
+    let sock;
+    try {
+      sock = new WebSocket(url, 'mqtt');
+      sock.binaryType = 'arraybuffer';
+    } catch (_) {
+      scheduleReconnect();
+      return;
+    }
+    ws = sock;
+    let buf = new Uint8Array(0);
+    let openedOnce = false;
+
+    const connectGuard = setTimeout(() => {
+      if (!mqttReady && ws === sock) {
+        // Primary didn't CONNACK in 5s — try next broker!
+        brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+        try { sock.close(); } catch (_) {}
+      }
+    }, 5500);
+
+    sock.onopen = () => {
+      if (ws !== sock) return;
+      openedOnce = true;
+      try {
+        sock.send(mqttConnectPkt(clientId + '_' + Math.random().toString(36).slice(2, 6)));
+      } catch (_) {}
+    };
+
+    sock.onmessage = (ev) => {
+      if (ws !== sock) return;
+      const chunk = new Uint8Array(ev.data);
+      const merged = new Uint8Array(buf.length + chunk.length);
+      merged.set(buf);
+      merged.set(chunk, buf.length);
+      buf = merged;
+
+      while (buf.length >= 2) {
+        let pos = 1, mult = 1, len = 0, b = 0, complete = false;
+        while (pos < buf.length) {
+          b = buf[pos++];
+          len += (b & 127) * mult;
+          mult *= 128;
+          if (!(b & 128)) { complete = true; break; }
+          if (pos > 5) { buf = new Uint8Array(0); return; }
+        }
+        if (!complete || buf.length < pos + len) break;
+        const type = buf[0] >> 4;
+        const body = buf.subarray(pos, pos + len);
+        buf = buf.subarray(pos + len);
+
+        if (type === 2) { // CONNACK
+          clearTimeout(connectGuard);
+          mqttReady = true;
+          notifyStatus();
+          try {
+            sock.send(mqttSubPkt(++pktCounter, roomPrefix() + '/#'));
+          } catch (_) {}
+          if (pingTimer) clearInterval(pingTimer);
+          pingTimer = setInterval(() => {
+            if (ws === sock && sock.readyState === 1) {
+              try { sock.send(new Uint8Array([0xC0, 0x00])); } catch (_) {}
+            }
+          }, 24000);
+          flushOutbox();
+        } else if (type === 3) { // PUBLISH
+          if (body.length < 2) continue;
+          const tlen = (body[0] << 8) | body[1];
+          if (2 + tlen > body.length) continue;
+          const payloadStr = dec.decode(body.subarray(2 + tlen));
+          if (!payloadStr) continue;
+          try {
+            const parsed = JSON.parse(payloadStr);
+            // Ignore our own echoed packets on non-retained/retained topics (seenIds handles it too)
+            emit(parsed);
+          } catch (_) {}
+        }
+      }
+    };
+
+    sock.onclose = () => {
+      clearTimeout(connectGuard);
+      if (ws !== sock) return;
+      ws = null;
+      mqttReady = false;
+      notifyStatus();
+      if (!openedOnce) brokerIdx = (brokerIdx + 1) % MQTT_BROKERS.length;
+      if (shouldRun) scheduleReconnect();
+    };
+
+    sock.onerror = () => {};
+  }
+
+  function scheduleReconnect(delayMs = 1200) {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (shouldRun && mode === 'cloud' && (!ws || ws.readyState > 1)) {
+        openMqttSocket();
+      }
+    }, delayMs);
+  }
+
+  // Re-subscribe (or reconnect) to immediately pull all retained state, results & AI images!
+  async function pollNow() {
+    if (mode !== 'cloud' || !roomCode) return;
+    if (ws && ws.readyState === 1 && mqttReady) {
+      try {
+        const sub = roomPrefix() + '/#';
+        ws.send(mqttUnsubPkt(++pktCounter, sub));
+        setTimeout(() => {
+          if (ws && ws.readyState === 1 && mqttReady) {
+            try { ws.send(mqttSubPkt(++pktCounter, sub)); } catch (_) {}
+          }
+        }, 120);
+      } catch (_) {}
+    } else {
+      openMqttSocket();
+    }
   }
 
   function connect(code) {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
-    lastServerTime = 0;
+    shouldRun = true;
+    brokerIdx = 0;
 
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -128,33 +327,19 @@ const RoomSync = (() => {
           try { emit(JSON.parse(ev.data)); } catch (_) {}
         };
       } catch (_) {}
+      notifyStatus();
     } else if (mode === 'cloud') {
-      try {
-        const topic = topicName(roomCode);
-        es = new EventSource(`https://ntfy.sh/${topic}/sse?since=5m`);
-        es.onmessage = (ev) => {
-          try {
-            const outer = JSON.parse(ev.data);
-            if (outer && typeof outer.time === 'number' && outer.time > lastServerTime) {
-              lastServerTime = outer.time;
-            }
-            if (outer && outer.message) {
-              emit(JSON.parse(outer.message));
-            }
-          } catch (_) {}
-        };
-        es.onerror = () => {};
-      } catch (_) {}
-
-      // Gentle safety poll + instant wake poll for mobile Safari/Chrome sleeping tabs
-      pollNow(true);
-      pollTimer = setInterval(() => {
-        if (typeof document === 'undefined' || !document.hidden) pollNow(false);
-      }, 4500);
+      openMqttSocket();
       if (typeof document !== 'undefined') {
-        wakeHandler = () => { if (!document.hidden) pollNow(true); };
+        wakeHandler = () => {
+          if (!document.hidden && shouldRun) {
+            if (!ws || ws.readyState !== 1 || !mqttReady) openMqttSocket();
+            else pollNow();
+          }
+        };
         document.addEventListener('visibilitychange', wakeHandler);
         window.addEventListener('focus', wakeHandler);
+        window.addEventListener('online', wakeHandler);
       }
     }
 
@@ -162,14 +347,33 @@ const RoomSync = (() => {
   }
 
   function disconnect() {
+    shouldRun = false;
+    mqttReady = false;
+    outbox = [];
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
     if (es) { try { es.close(); } catch (_) {} es = null; }
     if (bc) { try { bc.close(); } catch (_) {} bc = null; }
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     if (wakeHandler && typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', wakeHandler);
       window.removeEventListener('focus', wakeHandler);
+      window.removeEventListener('online', wakeHandler);
       wakeHandler = null;
     }
+  }
+
+  function mqttSubTopicFor(msg) {
+    if (msg.type === 'HOST_STATE') return { subTopic: 'state', retain: true };
+    if (msg.type === 'CLONE_RESULTS_FULL') return { subTopic: 'results', retain: true };
+    if (msg.type === 'IMG_READY' && msg.imgKey) return { subTopic: 'img/' + String(msg.imgKey).replace(/[^a-zA-Z0-9_-]/g, ''), retain: true };
+    return { subTopic: 'events', retain: false };
+  }
+
+  function clearRetained(subTopic) {
+    if (mode !== 'cloud' || !roomCode) return;
+    outbox.push({ subTopic, bodyStr: '', retain: true });
+    flushOutbox();
   }
 
   async function send(payload) {
@@ -196,25 +400,15 @@ const RoomSync = (() => {
         ok = res.ok;
       } catch (_) { ok = false; }
     } else if (mode === 'cloud' && roomCode) {
-      ok = false;
-      const topic = topicName(roomCode);
+      const { subTopic, retain } = mqttSubTopicFor(msg);
       const bodyStr = JSON.stringify(msg);
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          const res = await fetch(`https://ntfy.sh/${topic}`, {
-            method: 'POST',
-            body: bodyStr,
-          });
-          if (res.ok) { ok = true; break; }
-          if (res.status === 429 || res.status >= 500) {
-            await new Promise(r => setTimeout(r, 850 * (attempt + 1) + Math.floor(Math.random() * 450)));
-          } else {
-            break;
-          }
-        } catch (_) {
-          await new Promise(r => setTimeout(r, 700 * (attempt + 1)));
-        }
+      // Replace any older queued HOST_STATE in outbox so only the newest state flushes!
+      if (subTopic === 'state') {
+        outbox = outbox.filter(x => x.subTopic !== 'state');
       }
+      outbox.push({ subTopic, bodyStr, retain });
+      flushOutbox();
+      ok = mqttReady;
     }
     return { ...msg, ok };
   }
@@ -229,12 +423,12 @@ const RoomSync = (() => {
     return new Blob([u8], { type: mime });
   }
 
-  // Upload a high-res JPEG in ONE single HTTP request and return a direct HTTPS/LAN URL shareable with all 10+ phones!
+  // LAN mode: upload to local Node server; Cloud mode: return null so sendImage() streams over unlimited WSS MQTT!
   async function uploadImage(dataUrl) {
     if (!dataUrl || !roomCode) return null;
-    try {
-      const blob = dataUrlToBlob(dataUrl);
-      if (mode === 'lan') {
+    if (mode === 'lan') {
+      try {
+        const blob = dataUrlToBlob(dataUrl);
         const res = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': blob.type },
@@ -244,72 +438,36 @@ const RoomSync = (() => {
           const j = await res.json();
           if (j && j.url) return j.url;
         }
-      } else if (mode === 'cloud') {
-        const mediaTopic = topicName(roomCode) + '_media';
-        for (let attempt = 0; attempt < 5; attempt++) {
-          const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=art.jpg`, {
-            method: 'POST',
-            headers: { 'Content-Type': blob.type },
-            body: blob,
-          });
-          if (res.ok) {
-            const j = await res.json();
-            if (j?.attachment?.url) return j.attachment.url;
-            break;
-          }
-          if (res.status === 429 || res.status >= 500) {
-            await new Promise(r => setTimeout(r, 950 * (attempt + 1) + Math.floor(Math.random() * 450)));
-          } else {
-            break;
-          }
-        }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
     return null;
   }
 
-  // Upload an atomic JSON payload (e.g., all 10+ ranked Prompt Clone results + Nano Banana image URLs) in ONE request!
-  async function uploadJSON(obj, filename = 'results.json') {
+  async function uploadJSON(obj) {
     if (!obj || !roomCode) return null;
-    try {
-      const bodyStr = JSON.stringify(obj);
-      if (mode === 'lan') {
+    if (mode === 'lan') {
+      try {
         const res = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: bodyStr,
+          body: JSON.stringify(obj),
         });
         if (res.ok) {
           const j = await res.json();
           if (j && j.url) return j.url;
         }
-      } else if (mode === 'cloud') {
-        const mediaTopic = topicName(roomCode) + '_media';
-        for (let attempt = 0; attempt < 5; attempt++) {
-          const res = await fetch(`https://ntfy.sh/${mediaTopic}?filename=${encodeURIComponent(filename)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: bodyStr,
-          });
-          if (res.ok) {
-            const j = await res.json();
-            if (j?.attachment?.url) return j.attachment.url;
-            break;
-          }
-          if (res.status === 429 || res.status >= 500) {
-            await new Promise(r => setTimeout(r, 950 * (attempt + 1) + Math.floor(Math.random() * 450)));
-          } else {
-            break;
-          }
-        }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
     return null;
   }
 
-  // Fallback chunked transfer if direct upload unavailable
+  // Send a full crisp image directly over WSS MQTT (retained!) or chunked fallback on local BroadcastChannel
   async function sendImage(imgKey, dataUrl) {
     if (!imgKey || !dataUrl) return;
+    if (mode === 'cloud' || mode === 'lan') {
+      await send({ type: 'IMG_READY', imgKey, dataUrl });
+      return;
+    }
     const CHUNK_SIZE = 2200;
     const total = Math.ceil(dataUrl.length / CHUNK_SIZE);
     for (let i = 0; i < total; i++) {
@@ -320,15 +478,17 @@ const RoomSync = (() => {
         total,
         data: dataUrl.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
       });
-      if (mode === 'cloud' && total > 1) {
-        await new Promise(r => setTimeout(r, 220));
-      }
     }
   }
 
   function onMessage(fn) {
     listeners.push(fn);
     return () => { listeners = listeners.filter(x => x !== fn); };
+  }
+
+  function onStatus(fn) {
+    statusListeners.push(fn);
+    return () => { statusListeners = statusListeners.filter(x => x !== fn); };
   }
 
   function getJoinUrl(customBase) {
@@ -355,10 +515,13 @@ const RoomSync = (() => {
     disconnect,
     pollNow,
     send,
+    clearRetained,
     uploadImage,
     uploadJSON,
     sendImage,
     onMessage,
+    onStatus,
+    isConnected: () => mode === 'lan' || mode === 'local' || mqttReady,
     getJoinUrl,
     getMode: () => mode,
     getRoomCode: () => roomCode,

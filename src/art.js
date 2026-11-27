@@ -921,32 +921,80 @@ const AIArt = (() => {
     return { pct, matched, missed };
   }
 
-  // Grade a Prompt Clone submission against the exact target checklist + lexical detail match.
+  // Grade a Prompt Clone submission against the exact quantified 5-axis rubric + weighted checklist + lexical detail match.
   // NEVER uses the built-in cartoon turkey/prop catalog so tags & scores are 100% faithful to the real artwork!
-  function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas, checklist) {
+  function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas, checklist, rubric = null) {
     const uLower = String(userPrompt || '').toLowerCase();
     const lex = lexicalMatch(targetPrompt, userPrompt);
     const breakdown = [];
+    const checklistHits = [];
+    const checklistMisses = [];
     let checkPct = lex.pct;
+    let earnedPts = 0;
+    let maxPts = 0;
 
     if (Array.isArray(checklist) && checklist.length > 0) {
-      let earned = 0;
-      let maxW = 0;
       for (const item of checklist) {
-        const w = item.weight || 20;
-        maxW += w;
+        const w = item.weight || 15;
+        maxPts += w;
         const words = item.words || [];
         const matchedWords = words.filter(kw => uLower.includes(kw.toLowerCase()));
         const hit = matchedWords.length > 0;
-        if (hit) earned += w;
-        breakdown.push({ label: item.label, hit, partial: false });
+        if (hit) {
+          earnedPts += w;
+          checklistHits.push({ label: item.label, weight: w, axis: item.axis || 'props' });
+        } else {
+          checklistMisses.push({ label: item.label, weight: w, axis: item.axis || 'props' });
+        }
+        breakdown.push({ label: `${item.label} (+${w})`, shortLabel: item.label, weight: w, axis: item.axis || 'props', hit, partial: false });
       }
-      checkPct = Math.round((earned / Math.max(1, maxW)) * 100);
+      checkPct = Math.round((earnedPts / Math.max(1, maxPts)) * 100);
     } else {
-      // Custom uploaded image: derive tags purely from the actual matched/missed words of the target description!
       lex.matched.slice(0, 4).forEach(w => breakdown.push({ label: w, hit: true, partial: false }));
       lex.missed.slice(0, 2).forEach(w => breakdown.push({ label: w, hit: false, partial: false }));
     }
+
+    // Build quantified 5-axis scores (Subject /30, Setting /20, Props /20, Style /15, Palette /15)
+    const AXIS_DEFS = [
+      { id: 'subject', k: 'Subject', m: 30 },
+      { id: 'setting', k: 'Setting', m: 20 },
+      { id: 'props', k: 'Props', m: 20 },
+      { id: 'style', k: 'Style', m: 15 },
+      { id: 'palette', k: 'Palette', m: 15 },
+    ];
+    const axes = AXIS_DEFS.map(def => {
+      const items = Array.isArray(checklist) ? checklist.filter(it => it.axis === def.id) : [];
+      const rubText = rubric && rubric[def.id] ? rubric[def.id] : '';
+      const axisLex = rubText ? lexicalMatch(rubText, userPrompt) : null;
+      let ratio = lex.pct / 100;
+      let note = '';
+      if (items.length > 0) {
+        const axMax = items.reduce((a, b) => a + (b.weight || 15), 0);
+        let axGot = 0;
+        const hitNames = [];
+        const missNames = [];
+        for (const it of items) {
+          const hit = (it.words || []).some(kw => uLower.includes(kw.toLowerCase()));
+          if (hit) { axGot += (it.weight || 15); hitNames.push(it.label); }
+          else missNames.push(it.label);
+        }
+        const checkRatio = axGot / Math.max(1, axMax);
+        const lexRatio = axisLex ? (axisLex.pct / 100) : (lex.pct / 100);
+        ratio = checkRatio * 0.75 + lexRatio * 0.25;
+        if (hitNames.length && !missNames.length) note = `Hit: ${hitNames.join(', ')}`;
+        else if (hitNames.length && missNames.length) note = `Hit ${hitNames.join(', ')}; missed ${missNames.join(', ')}`;
+        else note = `Missed: ${missNames.join(', ')}`;
+      } else if (axisLex) {
+        const axTokens = Math.max(1, axisLex.matched.length + axisLex.missed.length);
+        const axRecall = axisLex.matched.length / axTokens;
+        ratio = Math.min(1, Math.max(axisLex.pct / 100, axRecall * 1.65));
+        note = axisLex.matched.length
+          ? `Matched: ${axisLex.matched.slice(0, 4).join(', ')}`
+          : `Missed ${def.k.toLowerCase()} cues`;
+      }
+      const s = Math.max(0, Math.min(def.m, Math.round(ratio * def.m)));
+      return { k: def.k, s, m: def.m, n: note.slice(0, 72) };
+    });
 
     const wordCount = (userPrompt || '').trim().split(/\s+/).filter(Boolean).length;
     let total = Array.isArray(checklist) && checklist.length > 0
@@ -957,19 +1005,20 @@ const AIArt = (() => {
     else if (wordCount < 4) total = Math.min(total, 36);
     total = Math.max(8, Math.min(98, total));
 
-    const hitLabels = breakdown.filter(b => b.hit).map(b => b.label);
-    const missLabels = breakdown.filter(b => !b.hit).map(b => b.label);
     let comment = '';
     if (wordCount < 4) {
-      comment = `Very short prompt (${wordCount} word${wordCount === 1 ? '' : 's'}) capped your score. Describe the main subject, setting, props, colors, and art style!`;
-    } else if (hitLabels.length && missLabels.length) {
-      comment = `Matched: ${hitLabels.join(', ')}. Missed: ${missLabels.join(', ')} (describing those would raise your Match %).`;
-    } else if (hitLabels.length && !missLabels.length) {
-      comment = `Nailed every key element (${hitLabels.join(', ')})! Your prompt detail coverage (${lex.pct}%) set the final Match %.`;
-    } else if (missLabels.length) {
-      comment = `Missed the key elements: ${missLabels.join(', ')}. Call out the exact subject, setting, props, and art style next round!`;
+      comment = `Very short prompt (${wordCount} word${wordCount === 1 ? '' : 's'}) capped your Match % at ${total}%. Describe the subject, setting, props, colors, and art style for full points!`;
+    } else if (checklistHits.length && checklistMisses.length) {
+      const topHits = checklistHits.map(h => `${h.label} (+${h.weight})`).join(', ');
+      const topMisses = checklistMisses.map(m => `${m.label} (-${m.weight})`).join(', ');
+      comment = `Earned ${earnedPts}/${maxPts} key-detail pts — Hit: ${topHits}. Left on the table: ${topMisses}.`;
+    } else if (checklistHits.length && !checklistMisses.length) {
+      comment = `Clean sweep! Hit all ${checklistHits.length}/${checklistHits.length} key visual details (${earnedPts}/${maxPts} pts), with ${lex.pct}% prompt-detail wording precision.`;
+    } else if (checklistMisses.length) {
+      const topMisses = checklistMisses.map(m => `${m.label} (-${m.weight})`).join(', ');
+      comment = `Earned 0/${maxPts} key-detail pts — Missed: ${topMisses}. Naming the main subject, props, setting, and art style will jump your score!`;
     } else {
-      comment = `Prompt detail coverage was ${lex.pct}% compared to the original scene description.`;
+      comment = `Prompt detail coverage reached ${lex.pct}% compared to the original scene description.`;
     }
 
     return {
@@ -979,6 +1028,9 @@ const AIArt = (() => {
       lexicalPct: lex.pct,
       primaryScore: checkPct,
       scoringMode: 'checklist',
+      axes,
+      checklistHits,
+      checklistMisses,
       breakdown,
       comment,
     };

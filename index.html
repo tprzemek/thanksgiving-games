@@ -681,6 +681,69 @@ h3 {
   font-weight: 800;
   color: var(--pumpkin-dark);
 }
+.winner-why-box {
+  background: linear-gradient(135deg, #FFF9E6 0%, #FFF2D1 100%);
+  border: 1.5px solid var(--gold);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.winner-why-box .why-title {
+  font-weight: 800;
+  font-size: 0.92rem;
+  color: #6B4200;
+}
+.winner-why-box ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.81rem;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.axis-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: #FAF7F2;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.axis-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.axis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+.axis-note {
+  font-size: 0.7rem;
+  color: var(--ink-muted);
+  line-height: 1.25;
+}
+.axis-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(43, 30, 22, 0.1);
+  overflow: hidden;
+}
+.axis-fill {
+  height: 100%;
+  border-radius: 999px;
+}
 
 /* Spot the Bot Answer Card */
 .bot-reveal-card {
@@ -2243,32 +2306,80 @@ const AIArt = (() => {
     return { pct, matched, missed };
   }
 
-  // Grade a Prompt Clone submission against the exact target checklist + lexical detail match.
+  // Grade a Prompt Clone submission against the exact quantified 5-axis rubric + weighted checklist + lexical detail match.
   // NEVER uses the built-in cartoon turkey/prop catalog so tags & scores are 100% faithful to the real artwork!
-  function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas, checklist) {
+  function gradeCloneSubmission(targetPrompt, userPrompt, targetCanvas, userCanvas, checklist, rubric = null) {
     const uLower = String(userPrompt || '').toLowerCase();
     const lex = lexicalMatch(targetPrompt, userPrompt);
     const breakdown = [];
+    const checklistHits = [];
+    const checklistMisses = [];
     let checkPct = lex.pct;
+    let earnedPts = 0;
+    let maxPts = 0;
 
     if (Array.isArray(checklist) && checklist.length > 0) {
-      let earned = 0;
-      let maxW = 0;
       for (const item of checklist) {
-        const w = item.weight || 20;
-        maxW += w;
+        const w = item.weight || 15;
+        maxPts += w;
         const words = item.words || [];
         const matchedWords = words.filter(kw => uLower.includes(kw.toLowerCase()));
         const hit = matchedWords.length > 0;
-        if (hit) earned += w;
-        breakdown.push({ label: item.label, hit, partial: false });
+        if (hit) {
+          earnedPts += w;
+          checklistHits.push({ label: item.label, weight: w, axis: item.axis || 'props' });
+        } else {
+          checklistMisses.push({ label: item.label, weight: w, axis: item.axis || 'props' });
+        }
+        breakdown.push({ label: `${item.label} (+${w})`, shortLabel: item.label, weight: w, axis: item.axis || 'props', hit, partial: false });
       }
-      checkPct = Math.round((earned / Math.max(1, maxW)) * 100);
+      checkPct = Math.round((earnedPts / Math.max(1, maxPts)) * 100);
     } else {
-      // Custom uploaded image: derive tags purely from the actual matched/missed words of the target description!
       lex.matched.slice(0, 4).forEach(w => breakdown.push({ label: w, hit: true, partial: false }));
       lex.missed.slice(0, 2).forEach(w => breakdown.push({ label: w, hit: false, partial: false }));
     }
+
+    // Build quantified 5-axis scores (Subject /30, Setting /20, Props /20, Style /15, Palette /15)
+    const AXIS_DEFS = [
+      { id: 'subject', k: 'Subject', m: 30 },
+      { id: 'setting', k: 'Setting', m: 20 },
+      { id: 'props', k: 'Props', m: 20 },
+      { id: 'style', k: 'Style', m: 15 },
+      { id: 'palette', k: 'Palette', m: 15 },
+    ];
+    const axes = AXIS_DEFS.map(def => {
+      const items = Array.isArray(checklist) ? checklist.filter(it => it.axis === def.id) : [];
+      const rubText = rubric && rubric[def.id] ? rubric[def.id] : '';
+      const axisLex = rubText ? lexicalMatch(rubText, userPrompt) : null;
+      let ratio = lex.pct / 100;
+      let note = '';
+      if (items.length > 0) {
+        const axMax = items.reduce((a, b) => a + (b.weight || 15), 0);
+        let axGot = 0;
+        const hitNames = [];
+        const missNames = [];
+        for (const it of items) {
+          const hit = (it.words || []).some(kw => uLower.includes(kw.toLowerCase()));
+          if (hit) { axGot += (it.weight || 15); hitNames.push(it.label); }
+          else missNames.push(it.label);
+        }
+        const checkRatio = axGot / Math.max(1, axMax);
+        const lexRatio = axisLex ? (axisLex.pct / 100) : (lex.pct / 100);
+        ratio = checkRatio * 0.75 + lexRatio * 0.25;
+        if (hitNames.length && !missNames.length) note = `Hit: ${hitNames.join(', ')}`;
+        else if (hitNames.length && missNames.length) note = `Hit ${hitNames.join(', ')}; missed ${missNames.join(', ')}`;
+        else note = `Missed: ${missNames.join(', ')}`;
+      } else if (axisLex) {
+        const axTokens = Math.max(1, axisLex.matched.length + axisLex.missed.length);
+        const axRecall = axisLex.matched.length / axTokens;
+        ratio = Math.min(1, Math.max(axisLex.pct / 100, axRecall * 1.65));
+        note = axisLex.matched.length
+          ? `Matched: ${axisLex.matched.slice(0, 4).join(', ')}`
+          : `Missed ${def.k.toLowerCase()} cues`;
+      }
+      const s = Math.max(0, Math.min(def.m, Math.round(ratio * def.m)));
+      return { k: def.k, s, m: def.m, n: note.slice(0, 72) };
+    });
 
     const wordCount = (userPrompt || '').trim().split(/\s+/).filter(Boolean).length;
     let total = Array.isArray(checklist) && checklist.length > 0
@@ -2279,19 +2390,20 @@ const AIArt = (() => {
     else if (wordCount < 4) total = Math.min(total, 36);
     total = Math.max(8, Math.min(98, total));
 
-    const hitLabels = breakdown.filter(b => b.hit).map(b => b.label);
-    const missLabels = breakdown.filter(b => !b.hit).map(b => b.label);
     let comment = '';
     if (wordCount < 4) {
-      comment = `Very short prompt (${wordCount} word${wordCount === 1 ? '' : 's'}) capped your score. Describe the main subject, setting, props, colors, and art style!`;
-    } else if (hitLabels.length && missLabels.length) {
-      comment = `Matched: ${hitLabels.join(', ')}. Missed: ${missLabels.join(', ')} (describing those would raise your Match %).`;
-    } else if (hitLabels.length && !missLabels.length) {
-      comment = `Nailed every key element (${hitLabels.join(', ')})! Your prompt detail coverage (${lex.pct}%) set the final Match %.`;
-    } else if (missLabels.length) {
-      comment = `Missed the key elements: ${missLabels.join(', ')}. Call out the exact subject, setting, props, and art style next round!`;
+      comment = `Very short prompt (${wordCount} word${wordCount === 1 ? '' : 's'}) capped your Match % at ${total}%. Describe the subject, setting, props, colors, and art style for full points!`;
+    } else if (checklistHits.length && checklistMisses.length) {
+      const topHits = checklistHits.map(h => `${h.label} (+${h.weight})`).join(', ');
+      const topMisses = checklistMisses.map(m => `${m.label} (-${m.weight})`).join(', ');
+      comment = `Earned ${earnedPts}/${maxPts} key-detail pts — Hit: ${topHits}. Left on the table: ${topMisses}.`;
+    } else if (checklistHits.length && !checklistMisses.length) {
+      comment = `Clean sweep! Hit all ${checklistHits.length}/${checklistHits.length} key visual details (${earnedPts}/${maxPts} pts), with ${lex.pct}% prompt-detail wording precision.`;
+    } else if (checklistMisses.length) {
+      const topMisses = checklistMisses.map(m => `${m.label} (-${m.weight})`).join(', ');
+      comment = `Earned 0/${maxPts} key-detail pts — Missed: ${topMisses}. Naming the main subject, props, setting, and art style will jump your score!`;
     } else {
-      comment = `Prompt detail coverage was ${lex.pct}% compared to the original scene description.`;
+      comment = `Prompt detail coverage reached ${lex.pct}% compared to the original scene description.`;
     }
 
     return {
@@ -2301,6 +2413,9 @@ const AIArt = (() => {
       lexicalPct: lex.pct,
       primaryScore: checkPct,
       scoringMode: 'checklist',
+      axes,
+      checklistHits,
+      checklistMisses,
       breakdown,
       comment,
     };
@@ -2594,7 +2709,7 @@ const GAME_DATA = {
     ],
   },
 
-  // GAME 6: PROMPT CLONE! (Reverse-Engineer the AI Image)
+  // GAME 6: PROMPT CLONE! (Reverse-Engineer the AI Image — 30 Quantified Studio Challenges)
   promptClone: {
     challenges: [
       {
@@ -2602,14 +2717,23 @@ const GAME_DATA = {
         title: 'Skateboard Sunset Turkey',
         difficulty: 'Warm-Up',
         asset: 'assets/clone-1.jpg',
-        secretPrompt: 'A cheerful cartoon turkey wearing sunglasses riding a red skateboard on a winding road at golden orange sunset with falling autumn leaves',
-        tips: 'Spot the animal, eyewear, vehicle color, sky lighting, and what is swirling through the air!',
+        secretPrompt: 'A cheerful cartoon brown turkey wearing black sunglasses and a blue bandana waving one wing while riding a red skateboard down a winding country road through orange autumn trees at glowing golden sunset with falling autumn leaves',
+        tips: 'Spot the animal, eyewear, neck accessory, vehicle color, winding road, sunset lighting, and swirling leaves!',
+        rubric: {
+          subject: 'Cheerful cartoon brown turkey with fanned tail feathers, smiling and waving one wing while riding forward',
+          setting: 'Winding grey asphalt road curving through colorful orange-and-gold autumn forest hills at glowing golden sunset',
+          props: 'Black sunglasses, blue bandana around neck, red skateboard with yellow wheels, swirling fallen autumn leaves',
+          style: 'Vibrant 3D-shaded modern storybook cartoon illustration with warm painterly light',
+          palette: 'Rich golden-orange sunset sky, amber and crimson foliage, warm browns, bright red board, eye-level dynamic angle',
+        },
         checklist: [
-          { label: 'Turkey', words: ['turkey', 'gobbler'], weight: 28 },
-          { label: 'Sunglasses', words: ['sunglass', 'shades', 'glasses'], weight: 18 },
-          { label: 'Skateboard', words: ['skateboard', 'board', 'skating', 'wheels'], weight: 22 },
-          { label: 'Sunset', words: ['sunset', 'golden', 'orange sky', 'dusk', 'sun'], weight: 16 },
-          { label: 'Autumn Leaves', words: ['leaf', 'leaves', 'autumn', 'fall'], weight: 16 },
+          { axis: 'subject', label: 'Cartoon Turkey', words: ['turkey', 'gobbler'], weight: 24 },
+          { axis: 'props', label: 'Sunglasses & Bandana', words: ['sunglass', 'shades', 'glasses', 'bandana', 'scarf'], weight: 14 },
+          { axis: 'props', label: 'Red Skateboard', words: ['skateboard', 'board', 'skating', 'wheels'], weight: 18 },
+          { axis: 'setting', label: 'Winding Road & Autumn Woods', words: ['road', 'path', 'winding', 'forest', 'trees', 'hills', 'autumn', 'fall'], weight: 16 },
+          { axis: 'palette', label: 'Golden Orange Sunset', words: ['sunset', 'golden', 'orange sky', 'dusk', 'sun', 'glow'], weight: 12 },
+          { axis: 'props', label: 'Falling Leaves', words: ['leaf', 'leaves', 'falling'], weight: 8 },
+          { axis: 'style', label: 'Cartoon Illustration', words: ['cartoon', 'illustrated', 'animated', 'storybook', 'cheerful'], weight: 8 },
         ],
       },
       {
@@ -2617,14 +2741,23 @@ const GAME_DATA = {
         title: 'Martian Pie Mission',
         difficulty: 'Medium',
         asset: 'assets/clone-2.jpg',
-        secretPrompt: 'A cute astronaut in a white spacesuit holding a giant slice of pumpkin pie with whipped cream on Mars in outer space with ringed planet and fireworks',
+        secretPrompt: '3D animated cute child astronaut in a white spacesuit holding a giant slice of pumpkin pie with whipped cream on the cratered red surface of Mars in outer space with ringed Saturn, Earth, and colorful fireworks bursting in the starry sky',
         tips: 'Notice who is holding what, the red cratered planet, what is in the sky, and the 3D illustration style!',
+        rubric: {
+          subject: 'Cute smiling 3D-animated kid astronaut in white spacesuit with visor open, standing and holding a huge pie slice',
+          setting: 'Cratered rusty-red rocky surface of Mars beneath a deep starry outer-space sky with rocky ridges',
+          props: 'Giant orange pumpkin pie slice with white whipped cream swirl, ringed planet Saturn, glowing Earth/moon, colorful fireworks',
+          style: 'Polished Pixar-like 3D animated character illustration with soft cinematic rim lighting',
+          palette: 'Deep cosmic navy sky, rusty Mars red-orange terrain, crisp white suit, vivid multicolored firework bursts, centered framing',
+        },
         checklist: [
-          { label: 'Astronaut', words: ['astronaut', 'spaceman', 'spacesuit', 'space suit'], weight: 26 },
-          { label: 'Pumpkin Pie', words: ['pie', 'pumpkin', 'whipped cream', 'slice'], weight: 24 },
-          { label: 'Mars / Space', words: ['mars', 'space', 'planet', 'crater', 'moon', 'red planet'], weight: 22 },
-          { label: 'Ringed Planet', words: ['saturn', 'ring', 'planet', 'stars'], weight: 14 },
-          { label: 'Fireworks', words: ['firework', 'spark', 'burst'], weight: 14 },
+          { axis: 'subject', label: 'Cute Astronaut in Spacesuit', words: ['astronaut', 'spaceman', 'spacesuit', 'space suit', 'helmet'], weight: 24 },
+          { axis: 'props', label: 'Giant Pumpkin Pie & Cream', words: ['pie', 'pumpkin', 'whipped cream', 'slice'], weight: 22 },
+          { axis: 'setting', label: 'Red Mars Crater Surface', words: ['mars', 'red planet', 'crater', 'space', 'planet', 'moon'], weight: 18 },
+          { axis: 'props', label: 'Ringed Planet Saturn', words: ['saturn', 'ringed', 'ring', 'planet'], weight: 12 },
+          { axis: 'props', label: 'Colorful Fireworks', words: ['firework', 'spark', 'burst'], weight: 12 },
+          { axis: 'style', label: '3D Animated Style', words: ['3d', 'pixar', 'animated', 'cartoon', 'cute', 'digital'], weight: 6 },
+          { axis: 'palette', label: 'Starry Cosmic Sky', words: ['star', 'night', 'galaxy', 'cosmic', 'blue', 'red'], weight: 6 },
         ],
       },
       {
@@ -2632,14 +2765,22 @@ const GAME_DATA = {
         title: 'Royal Kitchen Cat',
         difficulty: 'Medium',
         asset: 'assets/clone-3.jpg',
-        secretPrompt: 'A fluffy golden orange tabby cat wearing a royal gold crown sitting on a checkered kitchen table beside a steaming gravy boat and two glowing candles oil painting',
+        secretPrompt: 'Warm classical oil painting of a fluffy golden orange tabby cat wearing a jeweled gold crown sitting upright on a red-and-white checkered tablecloth on a rustic wooden kitchen table beside a steaming floral gravy boat and two tall lit brass candlesticks',
         tips: 'Spot the exact animal, color, headgear, table objects, lighting, and painting style!',
+        rubric: {
+          subject: 'Regal fluffy golden-orange tabby cat sitting upright facing forward with bright amber eyes',
+          setting: 'Cozy rustic kitchen with wooden shelves of ceramic bowls, sunlit mullioned window, and wooden table',
+          props: 'Small jeweled gold royal crown on head, red-and-white gingham checkered tablecloth, steaming floral white gravy boat with spoon, two lit brass candlesticks',
+          style: 'Rich classical oil painting with warm painterly brushstrokes and cozy chiaroscuro glow',
+          palette: 'Warm golden candlelight, ginger orange fur, crisp red-and-white checkered cloth, deep rustic wood browns',
+        },
         checklist: [
-          { label: 'Orange Cat', words: ['cat', 'kitten', 'tabby', 'feline'], weight: 26 },
-          { label: 'Gold Crown', words: ['crown', 'tiara', 'royal', 'king', 'queen'], weight: 20 },
-          { label: 'Gravy Boat', words: ['gravy', 'sauce', 'boat', 'pitcher', 'steam'], weight: 20 },
-          { label: 'Candles & Table', words: ['candle', 'table', 'checkered', 'kitchen', 'tablecloth'], weight: 18 },
-          { label: 'Oil Painting', words: ['oil', 'paint', 'painterly', 'canvas', 'classic'], weight: 16 },
+          { axis: 'subject', label: 'Fluffy Orange Tabby Cat', words: ['cat', 'kitten', 'tabby', 'feline', 'orange', 'ginger'], weight: 24 },
+          { axis: 'props', label: 'Gold Royal Crown', words: ['crown', 'tiara', 'royal', 'king', 'queen', 'gold'], weight: 18 },
+          { axis: 'props', label: 'Steaming Gravy Boat', words: ['gravy', 'sauce', 'boat', 'pitcher', 'steam'], weight: 18 },
+          { axis: 'props', label: 'Two Lit Candles', words: ['candle', 'candlestick', 'flame', 'glow'], weight: 12 },
+          { axis: 'setting', label: 'Checkered Kitchen Table', words: ['checkered', 'gingham', 'tablecloth', 'table', 'kitchen', 'window'], weight: 14 },
+          { axis: 'style', label: 'Classical Oil Painting', words: ['oil', 'paint', 'painterly', 'canvas', 'classic', 'realistic'], weight: 14 },
         ],
       },
       {
@@ -2647,14 +2788,22 @@ const GAME_DATA = {
         title: 'Neon Cyberpunk Bot',
         difficulty: 'Tricky',
         asset: 'assets/clone-4.jpg',
-        secretPrompt: 'A neon cyberpunk retro silver robot playing an orange electric guitar on a city skyline rooftop at night with three colorful floating balloons',
+        secretPrompt: 'Vibrant neon cyberpunk illustration of a retro silver robot playing an orange electric guitar on a glowing city skyline rooftop at night next to an amp with three floating glowing balloons in blue, pink, and yellow against neon signs and a crescent moon',
         tips: 'Catch the glowing neon style, instrument, floating props, time of day, and background skyline!',
+        rubric: {
+          subject: 'Smiling retro silver humanoid robot with glowing eyes and antennae playing an orange electric guitar',
+          setting: 'High-tech glowing city rooftop at night overlooking dense neon-lit skyscrapers, glowing signs, and crescent moon',
+          props: 'Orange-red electric guitar, Marshall-style amplifier, three glowing balloons (blue, pink, yellow)',
+          style: 'Bold neon cyberpunk digital comic/vector illustration with vivid glowing outlines',
+          palette: 'Electric magenta, cyan, deep purple night city, bright orange guitar, glowing neon rim lighting',
+        },
         checklist: [
-          { label: 'Robot', words: ['robot', 'bot', 'android', 'cyborg', 'mech'], weight: 26 },
-          { label: 'Electric Guitar', words: ['guitar', 'instrument', 'playing', 'rock'], weight: 22 },
-          { label: 'Neon Cyberpunk', words: ['neon', 'cyberpunk', 'cyber', 'glow', 'synth'], weight: 20 },
-          { label: 'Night City Skyline', words: ['city', 'skyline', 'rooftop', 'building', 'night'], weight: 16 },
-          { label: 'Balloons', words: ['balloon', 'floating'], weight: 16 },
+          { axis: 'subject', label: 'Retro Silver Robot', words: ['robot', 'bot', 'android', 'cyborg', 'mech', 'silver'], weight: 24 },
+          { axis: 'props', label: 'Orange Electric Guitar', words: ['guitar', 'instrument', 'playing', 'rock', 'amp'], weight: 20 },
+          { axis: 'style', label: 'Neon Cyberpunk Style', words: ['neon', 'cyberpunk', 'cyber', 'glow', 'synth', 'futuristic'], weight: 18 },
+          { axis: 'setting', label: 'Night City Rooftop & Skyline', words: ['city', 'skyline', 'rooftop', 'building', 'skyscraper', 'night', 'signs'], weight: 16 },
+          { axis: 'props', label: 'Three Floating Balloons', words: ['balloon', 'floating', 'three', '3'], weight: 14 },
+          { axis: 'palette', label: 'Cyan, Purple & Pink Glow', words: ['purple', 'cyan', 'pink', 'magenta', 'blue', 'moon'], weight: 8 },
         ],
       },
       {
@@ -2662,14 +2811,22 @@ const GAME_DATA = {
         title: 'Snowy Wizard Pup',
         difficulty: 'Medium',
         asset: 'assets/clone-5.jpg',
-        secretPrompt: 'Watercolor illustration of a golden retriever puppy wearing a blue starry wizard hat beside a glowing carved orange pumpkin on snowy mountains with snowfall',
+        secretPrompt: 'Soft storybook watercolor painting of a smiling golden retriever puppy wearing a blue starry pointed wizard hat sitting in deep snow beside a glowing carved orange pumpkin with snowy pine trees, jagged winter mountain peaks, falling snow, and a tiny crescent moon',
         tips: 'Check the soft watercolor style, dog breed, hat, glowing companion, mountain terrain, and weather!',
+        rubric: {
+          subject: 'Adorable smiling golden retriever puppy sitting in snow wearing a blue collar and pointed starry wizard hat',
+          setting: 'Snowy alpine landscape with jagged snow-capped mountain peaks, frosted evergreen pine trees, falling snowflakes, and crescent moon',
+          props: 'Dark-blue pointed wizard hat decorated with gold stars, glowing carved smiling orange jack-o\'-lantern pumpkin',
+          style: 'Soft whimsical storybook watercolor illustration with delicate pigment washes and paper texture',
+          palette: 'Cool icy blues and snowy whites contrasted with warm golden puppy fur and glowing orange pumpkin light',
+        },
         checklist: [
-          { label: 'Golden Puppy', words: ['dog', 'puppy', 'pup', 'retriever', 'golden'], weight: 26 },
-          { label: 'Wizard Hat', words: ['wizard', 'hat', 'magic', 'witch', 'starry'], weight: 20 },
-          { label: 'Carved Pumpkin', words: ['pumpkin', 'jack', 'lantern', 'carved', 'gourd'], weight: 20 },
-          { label: 'Snowy Mountains', words: ['snow', 'mountain', 'winter', 'peak'], weight: 18 },
-          { label: 'Watercolor Style', words: ['watercolor', 'water color', 'paint', 'soft', 'storybook'], weight: 16 },
+          { axis: 'subject', label: 'Golden Retriever Puppy', words: ['dog', 'puppy', 'pup', 'retriever', 'golden'], weight: 24 },
+          { axis: 'props', label: 'Blue Starry Wizard Hat', words: ['wizard', 'hat', 'magic', 'witch', 'starry', 'pointy'], weight: 18 },
+          { axis: 'props', label: 'Glowing Carved Pumpkin', words: ['pumpkin', 'jack', 'lantern', 'carved', 'gourd'], weight: 18 },
+          { axis: 'setting', label: 'Snowy Mountains & Snowfall', words: ['snow', 'mountain', 'winter', 'peak', 'pine', 'snowfall'], weight: 18 },
+          { axis: 'style', label: 'Soft Watercolor Style', words: ['watercolor', 'water color', 'paint', 'soft', 'storybook'], weight: 14 },
+          { axis: 'palette', label: 'Cool Blue & Warm Orange Glow', words: ['blue', 'white', 'orange', 'glow', 'moon'], weight: 8 },
         ],
       },
       {
@@ -2677,14 +2834,22 @@ const GAME_DATA = {
         title: 'Beach Party UFO',
         difficulty: 'Medium',
         asset: 'assets/clone-6.jpg',
-        secretPrompt: 'A cartoon silver UFO beaming a green ray onto a sunny tropical beach with palm trees where a turkey wearing sunglasses relaxes under a rainbow',
+        secretPrompt: 'Bright sunny cartoon illustration of a silver saucer UFO beaming a glowing green light ray onto a tropical sandy beach under a big colorful rainbow and palm trees, where a turkey wearing sunglasses, sun hat, and Hawaiian shirt lounges in a striped beach chair holding a tropical drink beside a beach ball and cooler',
         tips: 'Two very different visitors on vacation — catch the glowing beam, eyewear, beach props, and sky arch!',
+        rubric: {
+          subject: 'Cartoon turkey wearing sunglasses, sun hat, and floral Hawaiian shirt relaxing in a beach chair, plus hovering silver saucer UFO',
+          setting: 'Sunny tropical sandy beach with turquoise ocean waves, swaying green palm trees, blue sky with fluffy clouds, and big rainbow',
+          props: 'Glowing green UFO tractor beam, striped lounge chair, cocktail drink with umbrella, beach ball, blue cooler',
+          style: 'Clean, bright 2D Saturday-morning cartoon illustration with crisp black outlines',
+          palette: 'Vibrant turquoise sea, golden sand, bright neon-green beam, full rainbow spectrum, sunny daytime lighting',
+        },
         checklist: [
-          { label: 'UFO & Green Beam', words: ['ufo', 'spaceship', 'saucer', 'alien', 'beam', 'ray'], weight: 26 },
-          { label: 'Turkey in Shades', words: ['turkey', 'sunglass', 'shades'], weight: 24 },
-          { label: 'Tropical Beach', words: ['beach', 'palm', 'sand', 'ocean', 'tropical', 'island'], weight: 20 },
-          { label: 'Rainbow', words: ['rainbow', 'arch'], weight: 16 },
-          { label: 'Cartoon Style', words: ['cartoon', 'illustrated', 'sunny', 'vibrant'], weight: 14 },
+          { axis: 'props', label: 'Silver UFO & Green Beam', words: ['ufo', 'spaceship', 'saucer', 'alien', 'beam', 'ray'], weight: 22 },
+          { axis: 'subject', label: 'Turkey in Shades & Beach Chair', words: ['turkey', 'sunglass', 'shades', 'chair', 'hawaiian', 'loung'], weight: 24 },
+          { axis: 'setting', label: 'Sunny Tropical Beach & Palms', words: ['beach', 'palm', 'sand', 'ocean', 'tropical', 'island', 'sea'], weight: 18 },
+          { axis: 'props', label: 'Big Colorful Rainbow', words: ['rainbow', 'arch'], weight: 14 },
+          { axis: 'props', label: 'Drink, Beach Ball & Cooler', words: ['drink', 'cocktail', 'ball', 'cooler', 'hat'], weight: 10 },
+          { axis: 'style', label: 'Bright 2D Cartoon Style', words: ['cartoon', 'illustrated', 'sunny', 'vibrant', '2d', 'comic'], weight: 12 },
         ],
       },
       {
@@ -2692,14 +2857,22 @@ const GAME_DATA = {
         title: 'Retro Arcade Pilgrim',
         difficulty: 'Tricky',
         asset: 'assets/clone-7.jpg',
-        secretPrompt: 'Pixel art pilgrim wearing a buckle hat riding a red and white rocket at starry night with a bright rainbow',
-        tips: 'Notice the 8-bit pixel art style first! Then catch every object and sky detail.',
+        secretPrompt: 'Retro 16-bit pixel art illustration of a smiling pilgrim wearing a tall black buckle hat and flowing cape holding a tiny heart flag while riding a red-and-white rocket blasting fire across a bright rainbow arch in a starry night sky with crescent moon and pine trees',
+        tips: 'Notice the pixel art style first! Then catch every object and sky detail.',
+        rubric: {
+          subject: 'Smiling cartoon pilgrim in tall black buckle hat, white collar, and dark cape straddling a flying rocket and waving a small heart flag',
+          setting: 'Deep starry night sky with planets, constellations, white crescent moon, and dark silhouette pine trees along the bottom',
+          props: 'Red-and-white retro rocket with orange thruster flames, giant bright rainbow arch behind, small white heart flag',
+          style: 'Crisp retro 8-bit/16-bit arcade pixel art with visible square pixels and bold sprite outlines',
+          palette: 'Deep midnight-blue starry sky, vivid full-spectrum rainbow, red-and-white rocket, bright orange flame glow',
+        },
         checklist: [
-          { label: 'Pixel Art Style', words: ['pixel', '8-bit', '8bit', 'retro', 'arcade', 'blocky'], weight: 24 },
-          { label: 'Pilgrim & Buckle Hat', words: ['pilgrim', 'buckle', 'hat', 'settler'], weight: 24 },
-          { label: 'Rocket', words: ['rocket', 'spaceship', 'shuttle', 'fire', 'blast'], weight: 22 },
-          { label: 'Starry Night', words: ['night', 'star', 'space', 'dark sky'], weight: 15 },
-          { label: 'Rainbow', words: ['rainbow', 'trail'], weight: 15 },
+          { axis: 'style', label: 'Retro Pixel Art Style', words: ['pixel', '8-bit', '8bit', '16-bit', 'retro', 'arcade', 'blocky', 'sprite'], weight: 22 },
+          { axis: 'subject', label: 'Pilgrim in Buckle Hat', words: ['pilgrim', 'buckle', 'hat', 'settler', 'cape'], weight: 22 },
+          { axis: 'props', label: 'Red & White Rocket', words: ['rocket', 'spaceship', 'shuttle', 'fire', 'flame', 'blast'], weight: 20 },
+          { axis: 'props', label: 'Giant Bright Rainbow', words: ['rainbow', 'arch'], weight: 14 },
+          { axis: 'setting', label: 'Starry Night Sky & Moon', words: ['night', 'star', 'space', 'moon', 'crescent', 'trees'], weight: 14 },
+          { axis: 'palette', label: 'Dark Space & Vivid Colors', words: ['dark', 'blue', 'red', 'white', 'colorful', 'glow'], weight: 8 },
         ],
       },
       {
@@ -2707,14 +2880,22 @@ const GAME_DATA = {
         title: 'Vintage Dragon Chef',
         difficulty: 'Tricky',
         asset: 'assets/clone-8.jpg',
-        secretPrompt: 'Vintage sepia photograph of a dragon wearing a chef hat juggling glowing cranberries near an erupting volcano',
+        secretPrompt: 'Aged vintage sepia photograph with weathered antique paper border showing a cheerful chubby cartoon dragon wearing a tall white chef hat and neckerchief juggling six glowing cranberries in a ring in front of a smoking erupting volcano',
         tips: 'Notice the old-timey sepia photo style, the hat, the floating berries, and the fiery background!',
+        rubric: {
+          subject: 'Cheerful chubby standing dragon with small wings, smiling while wearing a tall white chef hat and bandana neckerchief',
+          setting: 'Rocky prehistoric valley with a huge smoking, erupting volcano billowing dark ash clouds in the left background',
+          props: 'Tall puffy chef hat, six glowing round cranberries/orbs juggled in a neat circular arc, wooden crate and steaming pot nearby',
+          style: 'Aged 19th-century vintage sepia-toned monochrome illustration/photograph with faded vignette and worn border',
+          palette: 'Warm antique sepia browns, creamy parchment highlights, dark charcoal shadows, luminous pale glowing orbs',
+        },
         checklist: [
-          { label: 'Dragon', words: ['dragon', 'winged', 'beast', 'scales'], weight: 26 },
-          { label: 'Chef Hat', words: ['chef', 'hat', 'cook', 'baker'], weight: 18 },
-          { label: 'Juggling Berries', words: ['juggl', 'cranberr', 'berr', 'ball', 'fruit'], weight: 18 },
-          { label: 'Erupting Volcano', words: ['volcano', 'lava', 'erupt', 'mountain', 'smoke'], weight: 20 },
-          { label: 'Vintage Sepia Photo', words: ['vintage', 'sepia', 'old', 'photo', 'antique', 'retro'], weight: 18 },
+          { axis: 'subject', label: 'Smiling Dragon', words: ['dragon', 'winged', 'beast', 'scales', 'monster'], weight: 24 },
+          { axis: 'props', label: 'Tall Chef Hat', words: ['chef', 'hat', 'cook', 'baker'], weight: 16 },
+          { axis: 'props', label: 'Juggling Glowing Berries', words: ['juggl', 'cranberr', 'berr', 'orb', 'ball', 'glow'], weight: 18 },
+          { axis: 'setting', label: 'Erupting Smoking Volcano', words: ['volcano', 'lava', 'erupt', 'mountain', 'smoke', 'ash'], weight: 18 },
+          { axis: 'style', label: 'Vintage Sepia Photo', words: ['vintage', 'sepia', 'old', 'photo', 'antique', 'retro', 'aged'], weight: 18 },
+          { axis: 'palette', label: 'Monochrome Brown Tones', words: ['brown', 'monochrome', 'faded', 'border', 'parchment'], weight: 6 },
         ],
       },
       {
@@ -2722,14 +2903,22 @@ const GAME_DATA = {
         title: 'Super Fox Victory',
         difficulty: 'Medium',
         asset: 'assets/clone-9.jpg',
-        secretPrompt: 'A cartoon orange fox wearing a red superhero cape holding a gold trophy cup in an autumn forest with falling leaves',
+        secretPrompt: 'Vibrant storybook cartoon illustration of a smiling orange fox wearing a flowing red superhero cape with a yellow star triumphantly holding up a shiny gold trophy cup in a sunlit autumn forest with swirling fallen leaves',
         tips: 'Check the woodland animal, costume piece, golden prize, and autumn scenery!',
+        rubric: {
+          subject: 'Joyful cute orange cartoon fox standing upright with bushy white-tipped tail, proudly raising a golden trophy',
+          setting: 'Sunlit magical autumn forest path lined with golden-orange and crimson trees with sunbeams filtering through',
+          props: 'Flowing red superhero cape emblazoned with a yellow star, large gleaming gold two-handled trophy cup, falling autumn leaves',
+          style: 'Warm modern animated storybook illustration with soft glowing sunlight',
+          palette: 'Radiant autumn oranges, crimson red cape, gleaming metallic gold trophy, warm golden sunbeams',
+        },
         checklist: [
-          { label: 'Orange Fox', words: ['fox', 'orange'], weight: 28 },
-          { label: 'Red Superhero Cape', words: ['cape', 'superhero', 'hero', 'red', 'cloak'], weight: 22 },
-          { label: 'Gold Trophy', words: ['trophy', 'cup', 'gold', 'award', 'prize'], weight: 22 },
-          { label: 'Autumn Forest', words: ['forest', 'wood', 'tree', 'autumn', 'fall'], weight: 16 },
-          { label: 'Falling Leaves', words: ['leaf', 'leaves', 'falling'], weight: 12 },
+          { axis: 'subject', label: 'Smiling Orange Fox', words: ['fox', 'orange'], weight: 26 },
+          { axis: 'props', label: 'Red Superhero Cape', words: ['cape', 'superhero', 'hero', 'red', 'cloak', 'star'], weight: 20 },
+          { axis: 'props', label: 'Gold Trophy Cup', words: ['trophy', 'cup', 'gold', 'award', 'prize'], weight: 20 },
+          { axis: 'setting', label: 'Sunlit Autumn Forest', words: ['forest', 'wood', 'tree', 'autumn', 'fall', 'sun'], weight: 16 },
+          { axis: 'props', label: 'Falling Leaves', words: ['leaf', 'leaves', 'falling'], weight: 10 },
+          { axis: 'style', label: 'Storybook Cartoon Style', words: ['cartoon', 'storybook', 'illustrated', 'animated', 'warm'], weight: 8 },
         ],
       },
       {
@@ -2737,14 +2926,22 @@ const GAME_DATA = {
         title: 'Triple Pumpkin Sketch',
         difficulty: 'Expert',
         asset: 'assets/clone-10.jpg',
-        secretPrompt: 'Black and white ink sketch drawing of three smiling carved pumpkins under a starry crescent moon night sky with glowing candles',
+        secretPrompt: 'Detailed black-and-white crosshatched pen-and-ink sketch drawing on cream paper of three smiling carved jack-o-lantern pumpkins resting on a stone wall with flickering wax candles under gnarled trees, a large crescent moon, and a starry night sky',
         tips: 'Count carefully, spot the exact black-and-white ink sketch style, and notice the moon & candles!',
+        rubric: {
+          subject: 'Three carved smiling jack-o\'-lantern pumpkins arranged side by side (largest in center, two smaller flanking)',
+          setting: 'Rustic stone ledge/wall at night with twisted gnarled dark tree branches, distant evergreen hills, starry sky, and bright crescent moon',
+          props: 'Flickering dripping wax candles placed along the stone wall in foreground and beside the pumpkins',
+          style: 'Intricate traditional black-and-white pen-and-ink crosshatched etching/sketch illustration on cream paper',
+          palette: 'Strict monochrome black ink and off-white/cream paper tones with luminous white halos around the moon and flames',
+        },
         checklist: [
-          { label: 'Three Pumpkins', words: ['pumpkin', 'jack', 'three', '3', 'carved'], weight: 28 },
-          { label: 'Ink Sketch / B&W', words: ['sketch', 'ink', 'black and white', 'black & white', 'drawing', 'pencil', 'line art', 'pen'], weight: 26 },
-          { label: 'Crescent Moon', words: ['moon', 'crescent'], weight: 18 },
-          { label: 'Starry Night Sky', words: ['star', 'night', 'sky'], weight: 14 },
-          { label: 'Candles', words: ['candle', 'flame', 'glow'], weight: 14 },
+          { axis: 'subject', label: 'Three Carved Pumpkins', words: ['three', '3', 'pumpkin', 'jack', 'carved', 'smiling'], weight: 26 },
+          { axis: 'style', label: 'Black & White Ink Sketch', words: ['sketch', 'ink', 'black and white', 'black & white', 'drawing', 'pencil', 'line art', 'pen', 'crosshatch', 'monochrome'], weight: 24 },
+          { axis: 'props', label: 'Large Crescent Moon', words: ['moon', 'crescent'], weight: 16 },
+          { axis: 'props', label: 'Flickering Wax Candles', words: ['candle', 'flame', 'wax', 'glow'], weight: 14 },
+          { axis: 'setting', label: 'Stone Wall, Trees & Starry Sky', words: ['stone', 'wall', 'tree', 'branch', 'star', 'night', 'sky'], weight: 14 },
+          { axis: 'palette', label: 'Monochrome Ink Contrast', words: ['black', 'white', 'cream', 'dark', 'shadow'], weight: 6 },
         ],
       },
       {
@@ -2752,14 +2949,22 @@ const GAME_DATA = {
         title: 'Underwater Pizza Party',
         difficulty: 'Medium',
         asset: 'assets/clone-11.jpg',
-        secretPrompt: 'Colorful underwater ocean cartoon of a turkey wearing a golden royal crown swimming beside a pepperoni pizza slice and three floating balloons',
+        secretPrompt: 'Bright colorful underwater coral reef cartoon illustration of a cheerful turkey wearing a jeweled gold royal crown swimming beside a floating pepperoni pizza slice and three colorful party balloons surrounded by tropical fish, coral, bubbles, and sunlit ocean rays',
         tips: 'Check the submerged coral reef world, main duo, royal headgear, and floating party props!',
+        rubric: {
+          subject: 'Happy cartoon brown turkey wearing a golden jeweled crown swimming playfully underwater',
+          setting: 'Vibrant sunlit tropical ocean coral reef with sunbeams streaming from surface, colorful coral, sea anemones, bubbles, and tropical fish',
+          props: 'Large floating cheesy pepperoni pizza slice, three colorful party balloons (blue polka-dot, red, green striped)',
+          style: 'Cheerful bright children\'s-book 2D/3D underwater cartoon illustration',
+          palette: 'Luminous aqua-turquoise ocean water, rainbow coral reefs, red-and-gold pizza and turkey, bright primary balloons',
+        },
         checklist: [
-          { label: 'Turkey', words: ['turkey', 'gobbler'], weight: 24 },
-          { label: 'Royal Crown', words: ['crown', 'king', 'royal', 'gold'], weight: 18 },
-          { label: 'Pepperoni Pizza', words: ['pizza', 'pepperoni', 'slice'], weight: 22 },
-          { label: 'Underwater / Reef', words: ['underwater', 'ocean', 'sea', 'coral', 'reef', 'bubble', 'swim', 'fish'], weight: 22 },
-          { label: 'Balloons', words: ['balloon', 'floating'], weight: 14 },
+          { axis: 'subject', label: 'Swimming Turkey', words: ['turkey', 'gobbler', 'swim'], weight: 22 },
+          { axis: 'props', label: 'Gold Royal Crown', words: ['crown', 'king', 'royal', 'gold'], weight: 16 },
+          { axis: 'props', label: 'Pepperoni Pizza Slice', words: ['pizza', 'pepperoni', 'slice', 'cheese'], weight: 20 },
+          { axis: 'setting', label: 'Underwater Coral Reef & Fish', words: ['underwater', 'ocean', 'sea', 'coral', 'reef', 'bubble', 'fish'], weight: 20 },
+          { axis: 'props', label: 'Three Party Balloons', words: ['balloon', 'floating', 'three', '3'], weight: 14 },
+          { axis: 'style', label: 'Colorful Cartoon Style', words: ['cartoon', 'colorful', 'illustrated', 'bright', 'vibrant'], weight: 8 },
         ],
       },
       {
@@ -2767,14 +2972,22 @@ const GAME_DATA = {
         title: 'Grandma\'s Rainy Bakery',
         difficulty: 'Tricky',
         asset: 'assets/clone-12.jpg',
-        secretPrompt: 'Soft watercolor painting of a silver-haired grandma chef wearing an apron and chef hat holding a pumpkin pie beside a steaming gravy boat in the rain',
+        secretPrompt: 'Soft cozy watercolor storybook painting of a smiling silver-haired grandma wearing glasses, white chef hat, knit sweater, and white apron holding a whipped-cream pumpkin pie outside a stone bakery cottage in gentle rain beside a wooden table with a steaming gravy boat and autumn trees',
         tips: 'Look for the soft watercolor style, the cozy bakery, food details, and rainy puddles!',
+        rubric: {
+          subject: 'Warm smiling silver-haired grandmother wearing glasses, white puffy chef hat, patterned autumn knit sweater, and white apron',
+          setting: 'Cozy European-style stone bakery cottage exterior with glowing warm windows, cobblestone puddles, autumn foliage, and falling rain streaks',
+          props: 'Whole pumpkin pie topped with whipped cream in her hands, rustic wooden table with steaming floral gravy boat, basket of pumpkins, chalkboard sign',
+          style: 'Delicate hand-painted watercolor and ink storybook illustration with visible paper wash',
+          palette: 'Soft misty rainy greys and muted blues warmed by glowing amber bakery windows, autumn rust oranges, and crisp white apron',
+        },
         checklist: [
-          { label: 'Grandma Chef', words: ['grandma', 'grandmother', 'old woman', 'lady', 'chef', 'baker', 'apron'], weight: 26 },
-          { label: 'Pumpkin Pie', words: ['pie', 'pumpkin', 'tart'], weight: 20 },
-          { label: 'Gravy Boat', words: ['gravy', 'sauce', 'boat', 'steam'], weight: 18 },
-          { label: 'Rain / Puddles', words: ['rain', 'puddle', 'wet', 'umbrella', 'drizzle', 'storm'], weight: 18 },
-          { label: 'Watercolor Style', words: ['watercolor', 'water color', 'paint', 'soft'], weight: 18 },
+          { axis: 'subject', label: 'Grandma Chef in Apron & Hat', words: ['grandma', 'grandmother', 'old woman', 'lady', 'chef', 'baker', 'apron', 'glasses', 'hat'], weight: 24 },
+          { axis: 'props', label: 'Pumpkin Pie', words: ['pie', 'pumpkin', 'whipped cream', 'tart'], weight: 18 },
+          { axis: 'props', label: 'Steaming Gravy Boat', words: ['gravy', 'sauce', 'boat', 'steam', 'table'], weight: 16 },
+          { axis: 'setting', label: 'Rainy Bakery & Puddles', words: ['rain', 'puddle', 'wet', 'drizzle', 'bakery', 'cottage', 'shop', 'autumn'], weight: 20 },
+          { axis: 'style', label: 'Soft Watercolor Painting', words: ['watercolor', 'water color', 'paint', 'soft', 'storybook'], weight: 16 },
+          { axis: 'palette', label: 'Warm Glow & Misty Rain', words: ['warm', 'cozy', 'mist', 'grey', 'orange', 'glow'], weight: 6 },
         ],
       },
       {
@@ -2782,14 +2995,22 @@ const GAME_DATA = {
         title: 'Origami Samurai Frog',
         difficulty: 'Tricky',
         asset: 'assets/clone-13.jpg',
-        secretPrompt: '3D folded origami paper samurai frog wearing red paper armor and helmet holding a paper katana sword on a wet mossy rock in a misty bamboo forest with glowing red paper lanterns',
+        secretPrompt: 'Cinematic macro photo of a 3D folded origami paper samurai frog wearing red-and-gold folded paper armor and horned helmet holding a paper katana sword standing on a wet mossy rock in a misty dark green bamboo forest with glowing red hanging lanterns',
         tips: 'Spot the folded origami paper craft style, the warrior amphibian, armor colors, mossy stone, and glowing lanterns!',
+        rubric: {
+          subject: 'Detailed folded green origami paper frog standing heroically like a samurai warrior in crisp angular paper creases',
+          setting: 'Dark misty emerald-green Japanese bamboo forest with wet mossy foreground boulder and soft bokeh depth',
+          props: 'Red-and-gold origami samurai armor and horned kabuto helmet, folded paper katana sword held across waist, glowing red hanging lanterns in background',
+          style: 'Photorealistic macro photography of handcrafted 3D folded origami paper sculpture',
+          palette: 'Deep misty forest greens and dark shadows contrasted dramatically with vermilion red armor, metallic gold accents, and glowing red lanterns',
+        },
         checklist: [
-          { label: 'Origami Paper Style', words: ['origami', 'paper', 'folded', 'craft'], weight: 24 },
-          { label: 'Frog', words: ['frog', 'toad', 'amphibian'], weight: 24 },
-          { label: 'Samurai Armor & Sword', words: ['samurai', 'armor', 'helmet', 'katana', 'sword', 'warrior'], weight: 22 },
-          { label: 'Bamboo & Mossy Rock', words: ['bamboo', 'forest', 'moss', 'rock', 'stone', 'mist'], weight: 16 },
-          { label: 'Red Lanterns', words: ['lantern', 'red', 'glow', 'lamp'], weight: 14 },
+          { axis: 'style', label: '3D Origami Paper Craft', words: ['origami', 'paper', 'folded', 'craft', 'crease'], weight: 22 },
+          { axis: 'subject', label: 'Green Frog Warrior', words: ['frog', 'toad', 'amphibian'], weight: 22 },
+          { axis: 'props', label: 'Red Samurai Armor & Helmet', words: ['samurai', 'armor', 'helmet', 'warrior', 'red'], weight: 18 },
+          { axis: 'props', label: 'Katana Sword', words: ['katana', 'sword', 'blade'], weight: 12 },
+          { axis: 'setting', label: 'Misty Bamboo Forest & Mossy Rock', words: ['bamboo', 'forest', 'moss', 'rock', 'stone', 'mist'], weight: 14 },
+          { axis: 'props', label: 'Glowing Red Lanterns', words: ['lantern', 'glow', 'lamp'], weight: 12 },
         ],
       },
       {
@@ -2797,14 +3018,22 @@ const GAME_DATA = {
         title: 'Steampunk Owl Pilot',
         difficulty: 'Tricky',
         asset: 'assets/clone-14.jpg',
-        secretPrompt: 'Steampunk barn owl pilot wearing brass aviator goggles and leather scarf sitting inside a wooden clockwork airship cockpit with copper gears and glowing compasses flying over golden sunset clouds',
+        secretPrompt: 'Detailed steampunk fantasy illustration of a barn owl pilot wearing brass aviator goggles and leather harness sitting inside a wooden clockwork airship cockpit packed with glowing brass compasses, gears, dials, and propellers flying high above golden sunset clouds',
         tips: 'Catch the steampunk fantasy style, bird species, goggles, cockpit instruments, and golden cloud sky!',
+        rubric: {
+          subject: 'Dignified white-and-tan barn owl pilot perched alertly inside the helm wearing vintage brass aviator goggles and leather pilot straps',
+          setting: 'High above a sea of dramatic golden sunlit clouds at sunset inside an open wooden Victorian flying airship cockpit',
+          props: 'Brass aviator goggles, leather harness/scarf, wooden ship helm wheel, glowing brass compasses, pressure dials, interlocking clockwork gears, spinning propellers and canvas canopy',
+          style: 'Richly detailed cinematic steampunk digital fantasy painting with intricate metallic craftsmanship',
+          palette: 'Burnished bronze, antique brass, warm amber sunset gold, deep twilight indigo-violet sky at top',
+        },
         checklist: [
-          { label: 'Barn Owl', words: ['owl', 'barn owl'], weight: 26 },
-          { label: 'Aviator Goggles & Scarf', words: ['goggle', 'glasses', 'scarf', 'pilot', 'aviator'], weight: 20 },
-          { label: 'Steampunk / Gears', words: ['steampunk', 'gear', 'brass', 'copper', 'clockwork', 'compass'], weight: 22 },
-          { label: 'Airship Cockpit', words: ['airship', 'cockpit', 'blimp', 'ship', 'balloon', 'propeller', 'wooden'], weight: 18 },
-          { label: 'Sunset Clouds', words: ['cloud', 'sunset', 'golden', 'sky', 'flying', 'sun'], weight: 14 },
+          { axis: 'subject', label: 'Barn Owl Pilot', words: ['owl', 'barn owl', 'pilot', 'aviator'], weight: 24 },
+          { axis: 'props', label: 'Brass Aviator Goggles', words: ['goggle', 'glasses', 'scarf', 'harness', 'leather'], weight: 16 },
+          { axis: 'style', label: 'Steampunk Fantasy Style', words: ['steampunk', 'clockwork', 'victorian', 'fantasy', 'brass', 'copper'], weight: 18 },
+          { axis: 'props', label: 'Gears, Dials & Compasses', words: ['gear', 'compass', 'dial', 'gauge', 'wheel', 'propeller'], weight: 14 },
+          { axis: 'setting', label: 'Wooden Airship Cockpit', words: ['airship', 'cockpit', 'blimp', 'ship', 'balloon', 'wooden'], weight: 16 },
+          { axis: 'palette', label: 'Golden Sunset Clouds', words: ['cloud', 'sunset', 'golden', 'sky', 'flying', 'sun'], weight: 12 },
         ],
       },
       {
@@ -2812,14 +3041,22 @@ const GAME_DATA = {
         title: 'Claymation Dino Chef',
         difficulty: 'Medium',
         asset: 'assets/clone-15.jpg',
-        secretPrompt: 'Stop-motion claymation green T-Rex dinosaur wearing a tall white chef hat and red polka-dot apron flipping golden pancakes in a skillet inside a cozy sunlit miniature kitchen',
+        secretPrompt: 'Stop-motion claymation miniature scene of a cheerful green T-Rex dinosaur wearing a tall white chef hat and red white-polka-dot apron flipping a golden pancake mid-air from a skillet inside a cozy sunlit rustic miniature kitchen with copper pans and brick wall',
         tips: 'Don\'t miss the sculpted claymation look, apron pattern, flying pancake, and sunlit miniature kitchen!',
+        rubric: {
+          subject: 'Cute sculpted green clay T-Rex dinosaur smiling happily while flipping a pancake in mid-air',
+          setting: 'Cozy warm sunlit miniature handcrafted kitchen with wooden counter, sunny window, spice shelf, brick wall, and hanging copper pots',
+          props: 'Tall puffy white chef hat, red apron with white polka dots, frying skillet, golden pancake airborne mid-flip, griddle & plate of stacked pancakes',
+          style: 'Tactile stop-motion claymation / plasticine miniature photography with soft fingerprint clay textures and warm studio lighting',
+          palette: 'Bright clay green dino, crisp white hat, cherry-red polka apron, warm honey-gold pancakes and cozy wood tones',
+        },
         checklist: [
-          { label: 'Claymation Style', words: ['clay', 'claymation', 'stop-motion', 'stop motion', 'plasticine', 'sculpted'], weight: 22 },
-          { label: 'Green T-Rex Dino', words: ['dino', 't-rex', 'trex', 'tyrannosaur', 'green'], weight: 24 },
-          { label: 'Chef Hat & Polka Apron', words: ['chef', 'hat', 'apron', 'polka', 'red'], weight: 18 },
-          { label: 'Flipping Pancakes', words: ['pancake', 'flip', 'pan', 'skillet', 'frying'], weight: 20 },
-          { label: 'Cozy Kitchen', words: ['kitchen', 'stove', 'counter', 'window', 'miniature'], weight: 16 },
+          { axis: 'style', label: 'Stop-Motion Claymation', words: ['clay', 'claymation', 'stop-motion', 'stop motion', 'plasticine', 'sculpted', 'miniature'], weight: 20 },
+          { axis: 'subject', label: 'Green T-Rex Dinosaur', words: ['dino', 't-rex', 'trex', 'tyrannosaur', 'green'], weight: 24 },
+          { axis: 'props', label: 'Chef Hat & Red Polka Apron', words: ['chef', 'hat', 'apron', 'polka', 'dot', 'red'], weight: 18 },
+          { axis: 'props', label: 'Flipping Golden Pancakes', words: ['pancake', 'flip', 'pan', 'skillet', 'frying'], weight: 20 },
+          { axis: 'setting', label: 'Cozy Sunlit Kitchen', words: ['kitchen', 'stove', 'counter', 'window', 'brick', 'pots'], weight: 14 },
+          { axis: 'palette', label: 'Warm Sunlit Palette', words: ['sun', 'warm', 'golden', 'cozy'], weight: 4 },
         ],
       },
       {
@@ -2827,14 +3064,21 @@ const GAME_DATA = {
         title: 'Stained-Glass Winter Peacock',
         difficulty: 'Expert',
         asset: 'assets/clone-16.jpg',
-        secretPrompt: 'Backlit Tiffany stained glass mosaic peacock with sapphire blue emerald green and gold tail feathers perched on a snowy pine branch under a glowing silver crescent moon and starry night sky',
+        secretPrompt: 'Backlit Tiffany stained glass mosaic window framed in dark metal showing a regal sapphire-blue, emerald-green, and gold peacock with long ornate tail feathers perched on snowy pine branches under a glowing silver crescent moon and starry midnight-blue night sky',
         tips: 'Name the stained-glass mosaic medium first! Then capture the bird, jewel colors, snowy pines, and crescent moon.',
+        rubric: {
+          subject: 'Majestic perched peacock in profile facing left with long cascading ornate eye-spot tail feathers draping downward',
+          setting: 'Winter night framed inside a rectangular leaded stained-glass window with snow-laden pine branches, evergreens, crescent moon, and stars',
+          props: 'Ornate peacock crest & patterned tail plumes, snow-dusted pine boughs, large pale silver crescent moon, twinkling stars, dark rectangular window frame',
+          style: 'Luminous backlit Tiffany stained-glass mosaic with distinct dark lead lines and textured translucent glass panes',
+          palette: 'Jewel-toned sapphire and cobalt blues, emerald and turquoise greens, glowing amber-gold feathers, icy white snow and silver moon',
+        },
         checklist: [
-          { label: 'Peacock', words: ['peacock', 'plume', 'tail'], weight: 28 },
-          { label: 'Stained Glass Style', words: ['stained glass', 'stained-glass', 'glass', 'mosaic', 'tiffany', 'window'], weight: 26 },
-          { label: 'Snowy Pine Branch', words: ['snow', 'pine', 'winter', 'branch', 'evergreen', 'tree'], weight: 18 },
-          { label: 'Crescent Moon & Stars', words: ['moon', 'crescent', 'star', 'night'], weight: 16 },
-          { label: 'Blue / Green / Gold', words: ['blue', 'sapphire', 'green', 'emerald', 'gold', 'teal', 'jewel'], weight: 12 },
+          { axis: 'subject', label: 'Peacock & Ornate Tail', words: ['peacock', 'plume', 'tail', 'feather'], weight: 26 },
+          { axis: 'style', label: 'Tiffany Stained Glass Mosaic', words: ['stained glass', 'stained-glass', 'glass', 'mosaic', 'tiffany', 'window', 'lead'], weight: 24 },
+          { axis: 'setting', label: 'Snowy Pine Branches', words: ['snow', 'pine', 'winter', 'branch', 'evergreen', 'tree'], weight: 18 },
+          { axis: 'props', label: 'Silver Crescent Moon & Stars', words: ['moon', 'crescent', 'star', 'night'], weight: 16 },
+          { axis: 'palette', label: 'Sapphire Blue, Emerald & Gold', words: ['blue', 'sapphire', 'green', 'emerald', 'gold', 'teal', 'jewel', 'backlit'], weight: 16 },
         ],
       },
       {
@@ -2842,14 +3086,22 @@ const GAME_DATA = {
         title: 'Pop-Art Surfer Corgi',
         difficulty: 'Medium',
         asset: 'assets/clone-17.jpg',
-        secretPrompt: 'Retro pop-art comic book illustration with Ben-Day halftone dots of a happy corgi dog wearing pink heart sunglasses surfing a giant curling turquoise ocean wave beside a yellow rubber duck',
+        secretPrompt: 'Bold retro pop-art comic book illustration with yellow Ben-Day halftone dot sky showing a joyful corgi dog wearing pink heart-shaped sunglasses riding a colorful striped surfboard inside a giant curling turquoise ocean wave beside a tiny yellow rubber duck surfing on its own mini board',
         tips: 'Notice the bold comic-book halftone dots, heart-shaped shades, surfboard colors, and tiny surfing sidekick!',
+        rubric: {
+          subject: 'Happy smiling golden-and-white Pembroke corgi balancing on a surfboard with tongue out wearing pink heart sunglasses',
+          setting: 'Massive curling turquoise-and-white ocean wave cresting overhead against a bright sunny yellow halftone comic sky',
+          props: 'Pink heart-shaped sunglasses, colorful retro striped surfboard, tiny yellow rubber duck surfing alongside on a mini board',
+          style: '1960s retro pop-art comic book print with thick black ink outlines and Ben-Day halftone dots',
+          palette: 'Punchy turquoise wave, sunny pop-art yellow sky, hot pink sunglasses, warm golden corgi, high-contrast black ink',
+        },
         checklist: [
-          { label: 'Corgi Dog', words: ['corgi', 'dog', 'puppy'], weight: 26 },
-          { label: 'Pop-Art / Comic Style', words: ['pop art', 'pop-art', 'comic', 'halftone', 'retro', 'dots', 'lichtenstein', 'warhol'], weight: 22 },
-          { label: 'Heart Sunglasses', words: ['heart', 'sunglass', 'shades', 'pink', 'glasses'], weight: 18 },
-          { label: 'Surfing Giant Wave', words: ['surf', 'wave', 'ocean', 'surfboard', 'turquoise'], weight: 20 },
-          { label: 'Rubber Duck', words: ['duck', 'ducky', 'rubber'], weight: 14 },
+          { axis: 'subject', label: 'Smiling Corgi Dog', words: ['corgi', 'dog', 'puppy'], weight: 24 },
+          { axis: 'style', label: 'Pop-Art Comic / Halftone Dots', words: ['pop art', 'pop-art', 'comic', 'halftone', 'retro', 'dots', 'lichtenstein', 'warhol'], weight: 20 },
+          { axis: 'props', label: 'Pink Heart Sunglasses', words: ['heart', 'sunglass', 'shades', 'pink', 'glasses'], weight: 16 },
+          { axis: 'setting', label: 'Giant Curling Ocean Wave', words: ['surf', 'wave', 'ocean', 'surfboard', 'turquoise', 'sea'], weight: 18 },
+          { axis: 'props', label: 'Surfing Yellow Rubber Duck', words: ['duck', 'ducky', 'rubber'], weight: 14 },
+          { axis: 'palette', label: 'Yellow Sky & Turquoise Wave', words: ['yellow', 'turquoise', 'blue', 'bright', 'vibrant'], weight: 8 },
         ],
       },
       {
@@ -2857,14 +3109,22 @@ const GAME_DATA = {
         title: 'Glowing Mushroom Village',
         difficulty: 'Tricky',
         asset: 'assets/clone-18.jpg',
-        secretPrompt: 'Enchanted fantasy forest at twilight with giant bioluminescent turquoise and purple glowing mushroom treehouses with warm round amber windows hanging rope bridges fireflies and a sparkling creek',
+        secretPrompt: 'Enchanted fantasy forest at twilight featuring giant bioluminescent glowing cyan-turquoise and violet-purple mushroom treehouses with warm amber arched windows and doors connected by hanging rope bridges over a sparkling blue creek filled with glowing fireflies',
         tips: 'Describe the glowing cyan and purple giant mushrooms, hanging rope bridges, warm windows, and twilight stream!',
+        rubric: {
+          subject: 'Cluster of towering bioluminescent glowing cyan and purple giant mushroom treehouses with tiny cozy windows and wooden doors',
+          setting: 'Mystical deep twilight fantasy forest framed by gnarled mossy trees, winding sparkling stream in center, and starry night sky',
+          props: 'Warm glowing golden round windows, arched wooden doors, curved wooden hanging rope bridges linking mushroom stems, floating glowing fireflies',
+          style: 'Lush atmospheric digital fantasy concept art painting with magical bioluminescent lighting',
+          palette: 'Electric bioluminescent cyan, neon turquoise, violet-purple caps, deep indigo twilight forest, contrasting warm amber window glow',
+        },
         checklist: [
-          { label: 'Giant Glowing Mushrooms', words: ['mushroom', 'toadstool', 'bioluminesc', 'glow', 'cyan', 'turquoise', 'purple'], weight: 28 },
-          { label: 'Treehouses & Windows', words: ['house', 'treehouse', 'village', 'window', 'door', 'home', 'fairy'], weight: 22 },
-          { label: 'Hanging Rope Bridges', words: ['bridge', 'rope', 'walkway', 'ladder'], weight: 18 },
-          { label: 'Sparkling Creek', words: ['creek', 'stream', 'river', 'water', 'brook'], weight: 16 },
-          { label: 'Twilight Forest & Fireflies', words: ['forest', 'twilight', 'night', 'firefl', 'fantasy', 'enchanted', 'magical'], weight: 16 },
+          { axis: 'subject', label: 'Giant Glowing Mushrooms', words: ['mushroom', 'toadstool', 'bioluminesc', 'glow', 'giant'], weight: 24 },
+          { axis: 'props', label: 'Treehouses & Warm Windows', words: ['house', 'treehouse', 'village', 'window', 'door', 'home', 'fairy'], weight: 20 },
+          { axis: 'props', label: 'Hanging Rope Bridges', words: ['bridge', 'rope', 'walkway', 'ladder'], weight: 16 },
+          { axis: 'setting', label: 'Sparkling Creek & Twilight Forest', words: ['creek', 'stream', 'river', 'water', 'forest', 'twilight', 'night', 'firefl'], weight: 18 },
+          { axis: 'palette', label: 'Cyan, Purple & Amber Glow', words: ['cyan', 'turquoise', 'blue', 'purple', 'violet', 'amber', 'warm'], weight: 14 },
+          { axis: 'style', label: 'Enchanted Fantasy Art', words: ['fantasy', 'enchanted', 'magical', 'fairy', 'whimsical'], weight: 8 },
         ],
       },
       {
@@ -2872,14 +3132,22 @@ const GAME_DATA = {
         title: '1950s Diner Penguin',
         difficulty: 'Medium',
         asset: 'assets/clone-19.jpg',
-        secretPrompt: 'Vintage 1950s chrome American diner photograph with black-and-white checkered floor and turquoise booths featuring an emperor penguin waiter in red bow tie striped vest soda-jerk hat and roller skates carrying a pink strawberry milkshake with cherry',
+        secretPrompt: 'Vintage 1950s American chrome diner photograph with black-and-white checkered floor, turquoise booths, and neon diner signs featuring an emperor penguin waiter wearing a red-and-white striped vest, red bow tie, white soda-jerk hat, and roller skates carrying a silver tray with a tall pink strawberry milkshake topped with a cherry',
         tips: 'Catch the retro 1950s diner photography style, penguin\'s outfit & roller skates, checkered floor, and pink milkshake!',
+        rubric: {
+          subject: 'Cheerful realistic emperor penguin waiter gliding forward on roller skates balancing a serving tray with one flipper',
+          setting: 'Authentic 1950s American chrome diner interior with black-and-white checkered tile floor, turquoise vinyl booths, seated patrons, counter stools, and red neon DINER/OPEN signs',
+          props: 'Red-and-white striped vest, red bow tie, white soda-jerk cap, vintage brown four-wheel roller skates, silver tray holding a tall pink strawberry milkshake with whipped cream, straw, and cherry',
+          style: 'Crisp nostalgic 1950s cinematic live-action photograph with shallow depth of field and warm diner lighting',
+          palette: 'Classic retro Americana palette: black-and-white checkerboard, mint-turquoise booths, cherry red accents, pastel pink milkshake',
+        },
         checklist: [
-          { label: 'Penguin Waiter', words: ['penguin', 'waiter', 'server'], weight: 26 },
-          { label: 'Roller Skates', words: ['skate', 'roller'], weight: 18 },
-          { label: 'Pink Milkshake', words: ['milkshake', 'shake', 'strawberry', 'cherry', 'tray', 'pink'], weight: 20 },
-          { label: '1950s Diner & Checkered Floor', words: ['diner', '1950', '50s', 'retro', 'checker', 'booth', 'chrome'], weight: 22 },
-          { label: 'Bow Tie / Vest / Hat', words: ['bow tie', 'bowtie', 'vest', 'stripe', 'hat', 'cap'], weight: 14 },
+          { axis: 'subject', label: 'Penguin Waiter', words: ['penguin', 'waiter', 'server'], weight: 24 },
+          { axis: 'props', label: 'Roller Skates', words: ['skate', 'roller'], weight: 16 },
+          { axis: 'props', label: 'Pink Milkshake on Tray', words: ['milkshake', 'shake', 'strawberry', 'cherry', 'tray', 'pink'], weight: 18 },
+          { axis: 'props', label: 'Striped Vest, Bow Tie & Cap', words: ['bow tie', 'bowtie', 'vest', 'stripe', 'hat', 'cap'], weight: 14 },
+          { axis: 'setting', label: '1950s Diner & Checkered Floor', words: ['diner', '1950', '50s', 'retro', 'checker', 'booth', 'chrome', 'neon'], weight: 20 },
+          { axis: 'style', label: 'Vintage Cinematic Photo', words: ['photo', 'photograph', 'realistic', 'vintage', 'cinematic'], weight: 8 },
         ],
       },
       {
@@ -2887,14 +3155,252 @@ const GAME_DATA = {
         title: 'Miniature Tree-Stump Café',
         difficulty: 'Expert',
         asset: 'assets/clone-20.jpg',
-        secretPrompt: 'Isometric 3D tilt-shift miniature diorama of a cozy autumn coffee shop carved inside a mossy oak tree stump decorated with warm string lights surrounded by fallen golden leaves with knitted-sweater squirrels drinking coffee at tiny wooden tables',
+        secretPrompt: 'Isometric 3D tilt-shift miniature diorama of a cozy autumn coffee shop carved inside a mossy oak tree stump strung with warm golden fairy lights surrounded by fallen golden leaves with tiny squirrels in knitted sweaters drinking coffee at tiny wooden café tables',
         tips: 'Name the miniature 3D tilt-shift diorama style, carved stump café, warm fairy lights, and sweater-wearing customers!',
+        rubric: {
+          subject: 'Miniature café carved into a mossy hollow oak tree stump with arched doorway and tiny squirrels in knit sweaters seated on its front deck',
+          setting: 'Elevated isometric miniature diorama base resting in a dense carpet of golden fallen autumn leaves',
+          props: 'Warm glowing fairy string lights draped across the stump, acorn shop sign, tiny round wooden bistro tables and chairs, steaming miniature coffee mugs, knitted sweaters on four squirrels',
+          style: 'Ultra-detailed 3D isometric tilt-shift miniature model diorama photography with shallow depth of field',
+          palette: 'Warm cozy golden-amber interior and string-light glow, rich mossy greens, earthy bark browns, golden autumn leaf carpet',
+        },
         checklist: [
-          { label: 'Miniature 3D Diorama', words: ['miniature', 'diorama', 'isometric', 'tilt-shift', 'tilt shift', 'tiny', '3d'], weight: 22 },
-          { label: 'Tree-Stump Café', words: ['stump', 'tree', 'cafe', 'café', 'coffee', 'shop', 'moss'], weight: 26 },
-          { label: 'Squirrels in Sweaters', words: ['squirrel', 'sweater', 'knit', 'drinking'], weight: 24 },
-          { label: 'String Lights', words: ['light', 'fairy', 'string', 'warm', 'glow'], weight: 14 },
-          { label: 'Autumn Fallen Leaves', words: ['autumn', 'fall', 'leaf', 'leaves', 'golden', 'acorn'], weight: 14 },
+          { axis: 'style', label: 'Isometric 3D Miniature Diorama', words: ['miniature', 'diorama', 'isometric', 'tilt-shift', 'tilt shift', 'tiny', '3d', 'model'], weight: 20 },
+          { axis: 'subject', label: 'Carved Tree-Stump Café', words: ['stump', 'tree', 'cafe', 'café', 'coffee', 'shop', 'moss'], weight: 24 },
+          { axis: 'subject', label: 'Squirrels in Knitted Sweaters', words: ['squirrel', 'sweater', 'knit', 'drinking', 'table'], weight: 22 },
+          { axis: 'props', label: 'Warm String Fairy Lights', words: ['light', 'fairy', 'string', 'warm', 'glow'], weight: 14 },
+          { axis: 'setting', label: 'Fallen Golden Autumn Leaves', words: ['autumn', 'fall', 'leaf', 'leaves', 'golden', 'acorn'], weight: 14 },
+          { axis: 'palette', label: 'Warm Amber & Earthy Moss', words: ['amber', 'brown', 'green', 'cozy'], weight: 6 },
+        ],
+      },
+      {
+        id: 'clone-21',
+        title: 'Crochet Alpaca Balloon',
+        difficulty: 'Medium',
+        asset: 'assets/clone-21.jpg',
+        secretPrompt: 'Macro photography of a handcrafted knitted yarn and crochet wool diorama showing a fluffy cream crochet alpaca wearing a bright red knitted scarf riding inside a woven wicker basket of a colorful patchwork knitted hot air balloon floating above snowy Alpine mountain peaks and frosted pine trees at warm pink-and-gold sunrise',
+        tips: 'Spot the knitted crochet yarn texture, fluffy passenger, red scarf, patchwork balloon, and snowy sunrise Alps!',
+        rubric: {
+          subject: 'Adorable fluffy cream-white crocheted yarn alpaca with tiny rosy cheeks sitting inside a wicker balloon basket looking out',
+          setting: 'Floating high over snow-covered jagged Alpine mountain peaks and snow-dusted miniature evergreen pine trees at soft golden-pink sunrise',
+          props: 'Bright red fringed knitted scarf on the alpaca, woven brown wicker basket with tiny yarn balls, colorful knitted patchwork hot air balloon canopy (blue, orange, yellow, green, red stripes)',
+          style: 'Macro tilt-shift photography of handcrafted knitted wool and crochet amigurumi yarn craft',
+          palette: 'Soft pastel peach-pink and golden sunrise sky, crisp snowy whites, warm cream wool, pops of primary patchwork yarn and crimson scarf',
+        },
+        checklist: [
+          { axis: 'style', label: 'Knitted / Crochet Yarn Craft', words: ['crochet', 'knit', 'yarn', 'wool', 'amigurumi', 'stitch', 'plush', 'macro'], weight: 22 },
+          { axis: 'subject', label: 'Fluffy Cream Alpaca / Llama', words: ['alpaca', 'llama', 'sheep', 'fluffy', 'cream'], weight: 22 },
+          { axis: 'props', label: 'Red Knitted Scarf', words: ['scarf', 'red'], weight: 12 },
+          { axis: 'props', label: 'Patchwork Hot Air Balloon & Basket', words: ['hot air balloon', 'balloon', 'basket', 'wicker', 'patchwork', 'colorful'], weight: 20 },
+          { axis: 'setting', label: 'Snowy Alpine Mountain Peaks', words: ['snow', 'mountain', 'alps', 'alpine', 'peak', 'pine', 'winter'], weight: 16 },
+          { axis: 'palette', label: 'Warm Pink & Gold Sunrise', words: ['sunrise', 'sunset', 'pink', 'gold', 'orange', 'pastel'], weight: 8 },
+        ],
+      },
+      {
+        id: 'clone-22',
+        title: 'Art Deco Jazz Octopus',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-22.jpg',
+        secretPrompt: 'Glamorous 1920s Art Deco geometric poster illustration in midnight navy, champagne gold, and emerald green showing a dapper purple octopus wearing a black tuxedo, bow tie, and shiny top hat playing a golden saxophone, brass trumpet, and snare drum simultaneously on a spotlight jazz stage with audience silhouettes and sunburst rays',
+        tips: 'Name the 1920s Art Deco gold-and-navy poster style, the suave multi-tasking sea creature, and all three jazz instruments!',
+        rubric: {
+          subject: 'Suave purple octopus standing upright in a black tuxedo, bow tie, and feathered gold-banded top hat playing three instruments at once',
+          setting: 'Glamorous 1920s Art Deco jazz club stage with geometric gold sunburst rays, twin spotlights, arched balconies, audience in evening wear, and ornamental geometric frame',
+          props: 'Golden saxophone, brass trumpet, snare drum with cymbal and drumsticks, tuxedo & bow tie, top hat with feather, floating music notes and emerald stylized waves',
+          style: 'Ornate 1920s Art Deco Gatsby-era geometric graphic poster illustration with crisp symmetry and gilded borders',
+          palette: 'Deep midnight navy blue, gleaming champagne gold, royal purple octopus, emerald-teal swirls, cream parchment outer border',
+        },
+        checklist: [
+          { axis: 'style', label: '1920s Art Deco Poster', words: ['art deco', 'deco', '1920', 'gatsby', 'poster', 'geometric', 'vintage'], weight: 22 },
+          { axis: 'subject', label: 'Purple Octopus', words: ['octopus', 'squid', 'tentacle', 'purple'], weight: 24 },
+          { axis: 'props', label: 'Tuxedo, Bow Tie & Top Hat', words: ['tuxedo', 'suit', 'top hat', 'hat', 'bow tie', 'bowtie'], weight: 14 },
+          { axis: 'props', label: 'Saxophone, Trumpet & Drums', words: ['sax', 'saxophone', 'trumpet', 'drum', 'cymbal', 'jazz', 'music', 'instrument'], weight: 18 },
+          { axis: 'setting', label: 'Spotlight Jazz Club Stage', words: ['stage', 'club', 'spotlight', 'crowd', 'audience', 'sunburst'], weight: 12 },
+          { axis: 'palette', label: 'Navy Blue, Gold & Emerald', words: ['gold', 'navy', 'dark blue', 'emerald', 'green', 'black'], weight: 10 },
+        ],
+      },
+      {
+        id: 'clone-23',
+        title: 'Ukiyo-e Ramen Cat',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-23.jpg',
+        secretPrompt: 'Traditional Japanese Ukiyo-e woodblock print on textured washi paper showing a happy calico cat wearing a blue patterned headband sitting on a wooden stool slurping steaming ramen noodles with chopsticks at a glowing red-lantern wooden street ramen stall under falling pink cherry blossoms with snow-capped Mount Fuji in the twilight background',
+        tips: 'Name the Japanese Ukiyo-e woodblock print medium, the calico cat\'s headband, steaming ramen cart, cherry blossoms, and Mount Fuji!',
+        rubric: {
+          subject: 'Joyful plump calico cat (white, orange, black patches) wearing a knotted blue-and-white Japanese headband sitting on a wooden stool slurping ramen noodles',
+          setting: 'Traditional wooden Japanese outdoor street ramen stall (yatai) at twilight with glowing red paper lanterns, silhouettes of patrons, blooming cherry blossom branches, and snow-capped Mount Fuji',
+          props: 'Steaming black-and-red ramen bowl with egg and narutomaki, wooden chopsticks, soy sauce bottle, hanging red lanterns, noren curtains, falling pink sakura petals',
+          style: 'Authentic Japanese Ukiyo-e woodblock print with bold black ink outlines, flat hand-printed color blocks, and fibrous cream washi paper border',
+          palette: 'Prussian indigo night sky, vermilion glowing red lanterns, soft sakura pink blossoms, warm wood browns, cream washi paper',
+        },
+        checklist: [
+          { axis: 'style', label: 'Japanese Ukiyo-e Woodblock Print', words: ['ukiyo', 'woodblock', 'japanese', 'print', 'washi', 'traditional', 'ink'], weight: 22 },
+          { axis: 'subject', label: 'Calico Cat with Headband', words: ['cat', 'calico', 'kitty', 'headband', 'bandana'], weight: 22 },
+          { axis: 'props', label: 'Slurping Steaming Ramen & Chopsticks', words: ['ramen', 'noodle', 'bowl', 'chopstick', 'soup', 'steam', 'slurp'], weight: 20 },
+          { axis: 'setting', label: 'Red-Lantern Ramen Stall', words: ['lantern', 'stall', 'stand', 'cart', 'shop', 'street', 'stool'], weight: 14 },
+          { axis: 'setting', label: 'Mount Fuji & Cherry Blossoms', words: ['fuji', 'mountain', 'cherry blossom', 'sakura', 'petal', 'pink'], weight: 16 },
+          { axis: 'palette', label: 'Indigo Blue & Red Glow', words: ['indigo', 'blue', 'red', 'vermilion', 'night'], weight: 6 },
+        ],
+      },
+      {
+        id: 'clone-24',
+        title: 'Low-Poly Crystal Whale',
+        difficulty: 'Expert',
+        asset: 'assets/clone-24.jpg',
+        secretPrompt: 'Faceted low-poly 3D geometric crystal art of a luminous translucent turquoise and sapphire crystal humpback whale soaring gracefully through fluffy pastel pink and lavender polygonal sunset clouds alongside a tiny wooden flying sailing ship with white sails and glowing warm amber lanterns',
+        tips: 'Spot the faceted low-poly crystal 3D style, translucent whale colors, fluffy pink clouds, and tiny flying wooden ship!',
+        rubric: {
+          subject: 'Giant glowing translucent turquoise-and-sapphire faceted crystal humpback whale gliding diagonally across the sky with outstretched flippers',
+          setting: 'Dreamy expansive sea of fluffy low-poly pastel pink, peach, and lavender sunset clouds with soft golden horizon light',
+          props: 'Tiny charming wooden flying sailing ship with billowing white sails, mast flag, and warm glowing amber stern and hull lanterns floating near the whale\'s tail',
+          style: 'Crisp low-poly 3D geometric faceted crystal sculpture render with refractive glass highlights',
+          palette: 'Luminous cyan, turquoise, and sapphire crystal blues contrasting dreamily against cotton-candy pink, lavender, and soft golden sunset light',
+        },
+        checklist: [
+          { axis: 'style', label: 'Low-Poly 3D Crystal Art', words: ['low-poly', 'low poly', 'poly', 'geometric', 'crystal', 'facet', 'glass', '3d'], weight: 22 },
+          { axis: 'subject', label: 'Turquoise Humpback Whale', words: ['whale', 'humpback', 'turquoise', 'cyan', 'blue', 'translucent'], weight: 24 },
+          { axis: 'props', label: 'Tiny Flying Wooden Sailing Ship', words: ['ship', 'boat', 'sail', 'wooden', 'pirate', 'vessel'], weight: 20 },
+          { axis: 'props', label: 'Glowing Amber Lanterns', words: ['lantern', 'glow', 'light', 'amber', 'warm'], weight: 10 },
+          { axis: 'setting', label: 'Pastel Pink & Lavender Clouds', words: ['cloud', 'pink', 'pastel', 'lavender', 'sunset', 'sky', 'flying'], weight: 18 },
+          { axis: 'palette', label: 'Dreamy Cyan & Pink Contrast', words: ['dreamy', 'magical', 'peach', 'gold', 'glowing'], weight: 6 },
+        ],
+      },
+      {
+        id: 'clone-25',
+        title: 'Botanical Clockwork Hedgehog',
+        difficulty: 'Expert',
+        asset: 'assets/clone-25.jpg',
+        secretPrompt: 'Detailed 19th-century Victorian naturalist botanical watercolor and fine pen-and-ink illustration on aged cream parchment paper showing an adorable hedgehog wearing tiny round brass spectacles carrying red spotted toadstool mushrooms, oak acorns, golden autumn oak and fern leaves, berries, and antique brass clockwork gears and wind-up key nestled on its quills',
+        tips: 'Spot the antique botanical sketchbook style on parchment, the tiny round glasses, spotted mushrooms, acorns, and brass gears!',
+        rubric: {
+          subject: 'Detailed cute hedgehog facing right wearing tiny round brass eyeglasses with woodland botanicals and clockwork nestled in its spiky quills',
+          setting: 'Isolated scientific-vignette composition resting on mossy twigs and berries against warm speckled antique cream parchment paper',
+          props: 'Tiny round brass spectacles, red-and-white spotted toadstool mushrooms, three oak acorns, golden autumn oak leaves and green ferns, brass clockwork gears and wind-up key, red and blue berries',
+          style: '19th-century Victorian naturalist field-guide pen-and-ink etching with delicate hand-tinted botanical watercolor washes',
+          palette: 'Aged warm ivory parchment background, earthy sepia browns, muted sage greens, autumn ochre gold, antique brass, pops of toadstool crimson',
+        },
+        checklist: [
+          { axis: 'subject', label: 'Hedgehog', words: ['hedgehog', 'porcupine', 'quill', 'spiky'], weight: 24 },
+          { axis: 'props', label: 'Tiny Round Brass Spectacles', words: ['glass', 'spectacle', 'eyeglass', 'round'], weight: 14 },
+          { axis: 'props', label: 'Red Spotted Mushrooms', words: ['mushroom', 'toadstool', 'spotted', 'red'], weight: 16 },
+          { axis: 'props', label: 'Brass Gears & Wind-Up Key', words: ['gear', 'clockwork', 'steampunk', 'brass', 'key', 'cog', 'watch'], weight: 16 },
+          { axis: 'props', label: 'Acorns, Oak Leaves & Ferns', words: ['acorn', 'oak', 'fern', 'leaf', 'leaves', 'berry', 'moss'], weight: 12 },
+          { axis: 'style', label: 'Victorian Botanical Ink & Watercolor', words: ['botanical', 'victorian', 'vintage', 'sketch', 'ink', 'watercolor', 'illustration', 'parchment', 'naturalist'], weight: 18 },
+        ],
+      },
+      {
+        id: 'clone-26',
+        title: 'Synthwave Roller Flamingo',
+        difficulty: 'Medium',
+        asset: 'assets/clone-26.jpg',
+        secretPrompt: '1980s retro synthwave outrun neon illustration of a stylish hot-pink flamingo wearing holographic shutter sunglasses and bright turquoise four-wheel roller skates gliding down a glowing magenta neon laser grid highway toward a giant striped orange-and-pink sunset flanked by black palm tree silhouettes and purple wireframe mountains',
+        tips: 'Name the 1980s synthwave neon grid aesthetic, the hot-pink bird, shutter shades, roller skates, and striped retro sun!',
+        rubric: {
+          subject: 'Stylish hot-pink flamingo striding confidently forward wearing retro shutter sunglasses and bright turquoise roller skates with glowing pink wheels',
+          setting: '1980s synthwave neon laser-grid highway receding toward a giant horizontal-striped retro sunset, purple wireframe mountains, black palm tree silhouettes, and starry night sky with laser streaks',
+          props: 'Holographic 80s louvered shutter sunglasses, bright cyan/turquoise lace-up four-wheel roller skates with glowing neon wheels',
+          style: 'Vibrant 1980s outrun / synthwave / vaporwave retro neon digital illustration',
+          palette: 'Electric hot pink, neon magenta, glowing cyan/turquoise, sunset orange-to-magenta gradient, deep space purple and jet-black silhouettes',
+        },
+        checklist: [
+          { axis: 'subject', label: 'Hot-Pink Flamingo', words: ['flamingo', 'pink', 'bird'], weight: 24 },
+          { axis: 'props', label: 'Turquoise Roller Skates', words: ['skate', 'roller', 'wheel', 'turquoise', 'cyan'], weight: 18 },
+          { axis: 'props', label: '80s Shutter Sunglasses', words: ['sunglass', 'shades', 'shutter', 'glasses'], weight: 14 },
+          { axis: 'style', label: '1980s Synthwave / Neon Style', words: ['synthwave', 'vaporwave', 'outrun', '1980', '80s', 'retro', 'neon', 'cyber'], weight: 18 },
+          { axis: 'setting', label: 'Neon Laser Grid Highway', words: ['grid', 'highway', 'road', 'laser', 'wireframe', 'mountain'], weight: 14 },
+          { axis: 'palette', label: 'Striped Sunset & Palm Silhouettes', words: ['sunset', 'sun', 'stripe', 'palm', 'silhouette', 'magenta', 'purple'], weight: 12 },
+        ],
+      },
+      {
+        id: 'clone-27',
+        title: 'Paper-Cut Viking Walrus',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-27.jpg',
+        secretPrompt: 'Layered 3D paper-cut shadowbox craft artwork inside a dark wooden frame showing a cheerful whiskered walrus with tusks wearing a horned Viking helmet steering a dragon-prow Viking longship with red-and-white striped sail and round shields across layered teal paper ocean waves under a crescent moon and glowing emerald-and-purple aurora borealis northern lights sky',
+        tips: 'Spot the framed 3D layered paper-cut shadowbox style, the tusked Viking sailor, dragon ship, striped sail, and northern lights!',
+        rubric: {
+          subject: 'Cheerful smiling brown whiskered walrus with ivory tusks wearing a horned Viking helmet gripping the wooden ship wheel',
+          setting: 'Layered cutout ocean of curling teal-and-white paper waves, snowy mountain islands, starry crescent-moon sky with glowing green-and-violet aurora borealis inside a wooden shadowbox frame',
+          props: 'Horned Viking helmet, carved dragon-head wooden Viking longship, wooden steering wheel, red-and-white vertical striped sail, round shields along hull',
+          style: 'Backlit 3D layered cardstock paper-cut shadowbox diorama inside a rustic dark wood frame',
+          palette: 'Glowing emerald green and violet aurora, layered seafoam and deep teal waves, crimson-and-white sail, warm kraft-paper browns',
+        },
+        checklist: [
+          { axis: 'style', label: '3D Paper-Cut Shadowbox', words: ['paper', 'paper-cut', 'papercut', 'shadowbox', 'shadow box', 'cutout', 'layered', 'frame', 'craft'], weight: 22 },
+          { axis: 'subject', label: 'Viking Walrus with Tusks', words: ['walrus', 'tusk', 'viking', 'helmet', 'horn'], weight: 24 },
+          { axis: 'props', label: 'Dragon Longship & Striped Sail', words: ['ship', 'boat', 'longship', 'dragon', 'sail', 'shield', 'wheel', 'stripe'], weight: 20 },
+          { axis: 'setting', label: 'Aurora Borealis Northern Lights', words: ['aurora', 'northern lights', 'green', 'purple', 'moon', 'sky'], weight: 16 },
+          { axis: 'setting', label: 'Layered Teal Ocean Waves', words: ['wave', 'ocean', 'sea', 'teal', 'water', 'mountain'], weight: 12 },
+          { axis: 'palette', label: 'Backlit Glowing Paper Layers', words: ['backlit', 'glow', 'shadow', 'red', 'white'], weight: 6 },
+        ],
+      },
+      {
+        id: 'clone-28',
+        title: 'Baroque Chess Raccoon',
+        difficulty: 'Expert',
+        asset: 'assets/clone-28.jpg',
+        secretPrompt: 'Dramatic 17th-century Dutch Baroque candlelit oil painting with rich chiaroscuro lighting showing a clever masked raccoon dressed in a burgundy gold-embroidered velvet doublet and crisp white ruffled Elizabethan collar leaning over a wooden chessboard moving a piece while playing chess against a tiny brown mouse perched on a tasseled burgundy velvet cushion lit by a glowing brass candlestick',
+        tips: 'Name the dramatic candlelit Renaissance/Baroque oil painting style, the raccoon\'s ruffled collar, the tiny opponent on a pillow, and the chess match!',
+        rubric: {
+          subject: 'Serious intelligent masked raccoon seated in a carved armchair moving a black chess piece, facing a tiny alert brown mouse perched on a velvet pillow',
+          setting: 'Dark atmospheric 17th-century study with antique tapestry, wooden bookshelves, decanter, and carved wooden table illuminated solely by a single glowing tallow candle',
+          props: 'Burgundy velvet Renaissance doublet with gold embroidery, crisp pleated white Elizabethan ruffled collar & cuffs, wooden chessboard with carved pieces, tasseled velvet mouse cushion, dripping brass candlestick',
+          style: 'Authentic Rembrandt-style 17th-century Dutch Baroque oil painting with rich chiaroscuro candlelight and canvas brushstroke texture',
+          palette: 'Deep velvety umber shadows, glowing golden candlelight, rich crimson-burgundy velvet, crisp ivory ruff, warm mahogany wood',
+        },
+        checklist: [
+          { axis: 'style', label: 'Baroque / Renaissance Oil Painting', words: ['baroque', 'renaissance', 'oil', 'painting', 'rembrandt', 'chiaroscuro', 'classical', 'dutch', 'museum'], weight: 20 },
+          { axis: 'subject', label: 'Raccoon in Ruffled Collar', words: ['raccoon', 'collar', 'ruff', 'velvet', 'doublet', 'burgundy', 'noble'], weight: 24 },
+          { axis: 'subject', label: 'Tiny Mouse on Velvet Cushion', words: ['mouse', 'rat', 'rodent', 'cushion', 'pillow'], weight: 18 },
+          { axis: 'props', label: 'Wooden Chessboard & Pieces', words: ['chess', 'chessboard', 'board', 'piece', 'game'], weight: 18 },
+          { axis: 'props', label: 'Glowing Brass Candlestick', words: ['candle', 'candlestick', 'flame', 'candlelit', 'glow'], weight: 12 },
+          { axis: 'setting', label: 'Dark Candlelit Study & Table', words: ['dark', 'candlelit', 'study', 'room', 'table', 'wood', 'book', 'shadow', 'chair'], weight: 8 },
+        ],
+      },
+      {
+        id: 'clone-29',
+        title: 'Pixel Submarine Greenhouse',
+        difficulty: 'Expert',
+        asset: 'assets/clone-29.jpg',
+        secretPrompt: 'Detailed 16-bit SNES pixel art cutaway cross-section of a round yellow brass submarine resting on the deep blue ocean floor surrounded by glowing jellyfish and coral, whose clear glass top dome holds a sunlit indoor botanical greenhouse filled with potted sunflowers, red tomatoes, hanging ferns, a watering can, and a sleeping orange cat curled on a wooden bench, with cozy bedroom fireplace and engine room below',
+        tips: 'Spot the 16-bit pixel art cutaway cross-section style, yellow submarine, glass dome greenhouse with sunflowers & sleeping cat, and glowing jellyfish outside!',
+        rubric: {
+          subject: 'Round yellow riveted brass submarine shown in detailed cross-section cutaway with a large transparent glass botanical greenhouse dome on top',
+          setting: 'Deep dark-blue underwater ocean floor teeming with colorful coral reefs, small fish, and glowing pink/blue/yellow jellyfish',
+          props: 'Glass greenhouse dome with blooming yellow sunflowers, red tomato vines, hanging ferns, blue watering can, sleeping orange tabby cat on a wooden bench; lower decks with cozy fireplace bedroom, boiler engine room with tiny engineer, barrels, and control gauges',
+          style: 'Ultra-detailed 16-bit SNES cozy indie-game pixel art cutaway illustration',
+          palette: 'Deep sapphire ocean blues contrasted with warm brass-yellow hull, bright leafy greens, sunny sunflower yellow, glowing pastel jellyfish, cozy warm fireplace orange',
+        },
+        checklist: [
+          { axis: 'style', label: '16-Bit Pixel Art Cutaway', words: ['pixel', '16-bit', '8-bit', 'retro', 'cutaway', 'cross-section', 'cross section', 'snes', 'game'], weight: 20 },
+          { axis: 'subject', label: 'Yellow Brass Submarine', words: ['submarine', 'sub', 'yellow', 'brass', 'dome'], weight: 22 },
+          { axis: 'props', label: 'Glass Dome Greenhouse & Plants', words: ['greenhouse', 'glass', 'sunflower', 'tomato', 'plant', 'garden', 'fern', 'flower'], weight: 20 },
+          { axis: 'props', label: 'Sleeping Orange Cat', words: ['cat', 'kitten', 'sleeping', 'orange', 'bench'], weight: 12 },
+          { axis: 'setting', label: 'Deep Ocean, Coral & Jellyfish', words: ['ocean', 'underwater', 'sea', 'jellyfish', 'coral', 'fish', 'deep'], weight: 18 },
+          { axis: 'props', label: 'Lower Cozy Rooms & Fireplace', words: ['room', 'bed', 'fireplace', 'engine', 'barrel', 'ladder', 'interior'], weight: 8 },
+        ],
+      },
+      {
+        id: 'clone-30',
+        title: 'Chalkboard Astronomy Llama',
+        difficulty: 'Medium',
+        asset: 'assets/clone-30.jpg',
+        secretPrompt: 'Colorful pastel chalk drawing on a dusty dark green wooden-framed classroom chalkboard showing a fluffy white llama wearing round tortoiseshell glasses happily peering through a brass tripod telescope surrounded by chalk-drawn constellations, ringed planet Saturn, a crescent moon, glowing yellow stars, spiral galaxies, and a doodle rocket ship',
+        tips: 'Name the colorful chalk-on-green-chalkboard medium, the bespectacled fluffy astronomer, tripod telescope, Saturn, and rocket doodles!',
+        rubric: {
+          subject: 'Smiling fluffy white-and-cream chalk-drawn llama wearing round tortoiseshell glasses squinting happily through a brass telescope',
+          setting: 'Dusty dark forest-green slate classroom chalkboard framed in warm brown wood with chalk tray and chalk sticks resting along the bottom',
+          props: 'Round tortoiseshell glasses, vintage brass telescope on wooden tripod, chalk doodles of ringed striped Saturn, crescent moon, connected dot-line constellations, yellow stars, spirals, and colorful blasting rocket ship',
+          style: 'Authentic hand-drawn colorful pastel chalk art on a classroom slate chalkboard with powdery smudges and chalk dust',
+          palette: 'Deep dusty chalkboard green, chalky cream-white llama, warm brass gold, pastel yellow stars, coral-orange and sky-blue Saturn and rocket',
+        },
+        checklist: [
+          { axis: 'style', label: 'Pastel Chalk on Green Chalkboard', words: ['chalk', 'chalkboard', 'blackboard', 'slate', 'pastel', 'doodle', 'classroom', 'green'], weight: 22 },
+          { axis: 'subject', label: 'Fluffy Llama in Round Glasses', words: ['llama', 'alpaca', 'glasses', 'spectacle', 'fluffy'], weight: 24 },
+          { axis: 'props', label: 'Brass Tripod Telescope', words: ['telescope', 'tripod', 'brass', 'looking', 'peering'], weight: 20 },
+          { axis: 'props', label: 'Ringed Planet Saturn & Moon', words: ['saturn', 'planet', 'ring', 'moon', 'crescent'], weight: 14 },
+          { axis: 'props', label: 'Rocket Ship & Constellations', words: ['rocket', 'constellation', 'star', 'galaxy', 'space', 'astronomy'], weight: 14 },
+          { axis: 'setting', label: 'Wooden Chalkboard Frame', words: ['wood', 'frame', 'dust', 'board'], weight: 6 },
         ],
       },
     ],
@@ -3570,8 +4076,8 @@ const LiveAI = (() => {
   }
 
   // Strict 5-axis Vision resemblance judge (Subject 30 + Setting 20 + Props 20 + Style 15 + Layout/Color 15 = 100)
-  // Eliminates LLM 70%-clustering by summing 5 independent visual rubric axes!
-  async function gradeImagesWithVision(targetDataUrl, playerDataUrl, refPrompt, playerPrompt, playerName) {
+  // Uses the ground-truth 5-axis visual analysis of the original image for quantified, objective scoring!
+  async function gradeImagesWithVision(targetDataUrl, playerDataUrl, refPrompt, playerPrompt, playerName, rubric = null) {
     const cfg = loadSettings();
     if (!cfg.apiKey || cfg.provider !== 'gemini' || !targetDataUrl || !playerDataUrl) return null;
     const splitB64 = (du) => {
@@ -3581,6 +4087,9 @@ const LiveAI = (() => {
     const imgA = splitB64(targetDataUrl);
     const imgB = splitB64(playerDataUrl);
     if (!imgA || !imgB) return null;
+    const rubricText = rubric
+      ? `\nOFFICIAL GROUND-TRUTH VISUAL REFERENCE KEY FOR IMAGE 1:\n- Subject (30 pts): ${rubric.subject}\n- Setting (20 pts): ${rubric.setting}\n- Props (20 pts): ${rubric.props}\n- Style (15 pts): ${rubric.style}\n- Palette & Layout (15 pts): ${rubric.palette}\n`
+      : `\nReference description of Image 1: "${refPrompt}"\n`;
     try {
       for (const model of ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']) {
         for (let retry = 0; retry < 2; retry++) {
@@ -3592,20 +4101,21 @@ const LiveAI = (() => {
               body: JSON.stringify({
                 contents: [{
                   parts: [
-                    { text: `You are a strict, fair, witty visual art judge for a competitive Prompt Clone game.
-Image 1 is the ORIGINAL target artwork. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}".
-Grade Image 2 against Image 1 strictly across these 5 visual axes (use exact discriminating integers — NEVER default to 70 or cluster scores around 70/75!):
+                    { text: `You are a strict, fair, highly quantified visual art judge for a competitive Prompt Clone game.
+Image 1 is the ORIGINAL target artwork. Image 2 was AI-generated from ${playerName}'s prompt: "${playerPrompt}".${rubricText}
+Grade Image 2 against Image 1 strictly and objectively across these 5 quantified axes (use exact discriminating integers across the full range — NEVER default to 70 or cluster scores!):
 - subject (0-30): exact species/character, pose, expression, count (wrong main subject = 0-8)
-- setting (0-20): exact environment, background, time of day, weather
-- props (0-20): clothing, hats, held items, secondary characters/objects (deduct heavily for missing or invented props)
-- style (0-15): exact art medium & rendering style (e.g. claymation vs photo vs watercolor vs origami vs comic vs stained glass; wrong style = 0-5)
-- composition (0-15): color palette, lighting, camera angle, framing
-Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": int, "composition": int, "comment": "2 short, concrete sentences: first praise the specific visual elements that matched closely, second explain specifically what differed or was missing and cost points."}.` },
+- setting (0-20): exact environment, background landmarks, time of day, weather
+- props (0-20): clothing, hats, held items, secondary characters/objects (deduct clearly for missing or invented props)
+- style (0-15): exact art medium & rendering technique (e.g. crochet vs watercolor vs pixel art vs stained glass vs oil painting; wrong medium = 0-5)
+- composition (0-15): color palette, lighting temperature, camera angle, framing
+Return ONLY valid JSON:
+{"subject": int, "setting": int, "props": int, "style": int, "composition": int, "notes": {"subject": "4-9 word reason", "setting": "4-9 word reason", "props": "4-9 word reason", "style": "4-9 word reason", "composition": "4-9 word reason"}, "comment": "2-3 concrete sentences: praise the strongest specific visual matches and explain the exact missing/different details that cost points."}` },
                     { inlineData: imgA },
                     { inlineData: imgB },
                   ],
                 }],
-                generationConfig: { responseMimeType: 'application/json', temperature: 0.35 },
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.3 },
               }),
             }
           );
@@ -3629,6 +4139,14 @@ Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": 
               const sty = clamp(j.style, 15);
               const cmp = clamp(j.composition, 15);
               const total = Math.max(5, Math.min(99, sub + set + prp + sty + cmp));
+              const notes = j.notes && typeof j.notes === 'object' ? j.notes : {};
+              const axes = [
+                { k: 'Subject', s: sub, m: 30, n: String(notes.subject || '').slice(0, 72) },
+                { k: 'Setting', s: set, m: 20, n: String(notes.setting || '').slice(0, 72) },
+                { k: 'Props', s: prp, m: 20, n: String(notes.props || '').slice(0, 72) },
+                { k: 'Style', s: sty, m: 15, n: String(notes.style || '').slice(0, 72) },
+                { k: 'Palette', s: cmp, m: 15, n: String(notes.composition || '').slice(0, 72) },
+              ];
               const breakdown = [
                 { label: `Subject ${sub}/30`, hit: sub >= 23, partial: sub >= 14 && sub < 23 },
                 { label: `Setting ${set}/20`, hit: set >= 15, partial: set >= 9 && set < 15 },
@@ -3636,7 +4154,7 @@ Return ONLY valid JSON: {"subject": int, "setting": int, "props": int, "style": 
                 { label: `Style ${sty}/15`, hit: sty >= 11, partial: sty >= 6 && sty < 11 },
                 { label: `Palette ${cmp}/15`, hit: cmp >= 11, partial: cmp >= 6 && cmp < 11 },
               ];
-              return { score: total, visionScore: total, breakdown, comment: j.comment || '' };
+              return { score: total, visionScore: total, axes, breakdown, comment: j.comment || '' };
             }
             if (typeof j.score === 'number') return j;
           }
@@ -3833,7 +4351,10 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let deck = shuffle(GAME_DATA.promptClone.challenges.map((_, i) => i));
+    const allIdxs = GAME_DATA.promptClone.challenges.map((_, i) => i);
+    const freshIdxs = shuffle(allIdxs.filter(i => i >= 20));
+    const classicIdxs = shuffle(allIdxs.filter(i => i < 20));
+    let deck = [...freshIdxs, ...classicIdxs];
     let deckPos = 0;
     let idx = deck[deckPos];
     let phase = 'lobby'; // lobby | writing | collecting | pass_input | grading | results
@@ -3957,19 +4478,28 @@ const Games = (() => {
         g1: r.gapToFirst ?? 0,
         gu: r.marginOrGap ?? 0,
         an: String(r.aboveName || '').slice(0, 18),
-        c: String(r.comment || '').slice(0, 260),
+        c: String(r.comment || '').slice(0, 320),
         src: r.imgSource || 'builtin',
       };
       if (r.tieBreakNote) item.tb = String(r.tieBreakNote).slice(0, 100);
+      if (Array.isArray(r.axes) && r.axes.length) {
+        item.ax = r.axes.slice(0, 5).map(a => ({
+          k: a.k,
+          s: a.s,
+          m: a.m,
+          n: String(a.n || '').slice(0, 68),
+        }));
+      }
       const directUrl = r.sharedUrl || r.aiUrl || null;
       if (directUrl) item.url = directUrl;
       else if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
       if (r.autoCollected) item.auto = 1;
-      if (Array.isArray(r.breakdown) && r.breakdown.length) item.bd = r.breakdown.slice(0, 6);
+      if (Array.isArray(r.breakdown) && r.breakdown.length) item.bd = r.breakdown.slice(0, 7);
       return item;
     }
 
     let resultsUrl = null; // Atomic hosted JSON containing ALL ranked participants + direct image URLs
+    let winnerAnalysis = null; // Quantified "Why #1 Got the Highest Score" summary for Host & Phones
 
     function broadcastPhoneState() {
       if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
@@ -3993,6 +4523,7 @@ const Games = (() => {
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
         totalResults: phase === 'results' ? gradedResults.length : 0,
         resultsUrl: phase === 'results' ? resultsUrl : null,
+        winnerAnalysis: phase === 'results' ? winnerAnalysis : null,
         results: inlineResults,
       });
     }
@@ -4011,13 +4542,14 @@ const Games = (() => {
         ...toCompactResult(r, i),
         p: r.prompt || '',
         c: r.comment || '',
-        bd: (r.breakdown || []).slice(0, 6),
+        bd: (r.breakdown || []).slice(0, 7),
       }));
       // Over unlimited real-time WSS MQTT (or BroadcastChannel), send ALL ranked results atomically (retained!)
       if (!resultsUrl) {
         await RoomSync.send({
           type: 'CLONE_RESULTS_FULL',
           roundId,
+          wa: winnerAnalysis,
           items: fullItems,
         });
       }
@@ -4229,6 +4761,9 @@ const Games = (() => {
       let completedCount = 0;
       let aiWarning = '';
 
+      const targetRubric = customTargetImg ? null : (target.rubric || null);
+      const targetChecklist = customTargetImg ? null : (target.checklist || null);
+
       async function processEntry(i, pid, sub) {
         const players = App.getPlayers();
         const p = players.find(x => x.id === pid) || {
@@ -4240,7 +4775,7 @@ const Games = (() => {
         let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
         let sharedUrl = null;
         let hiResDataUrl = null;
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, customTargetImg ? null : target.checklist);
+        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, targetChecklist, targetRubric);
 
         try {
           // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
@@ -4266,19 +4801,23 @@ const Games = (() => {
           grade.primaryScore = grade.semanticPct ?? grade.score;
           if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
             const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
-            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
+            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name, targetRubric);
             if (vis && typeof vis.score === 'number') {
               // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
               grade.scoringMode = 'vision';
               grade.primaryScore = vis.visionScore ?? vis.score;
               grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
+              if (Array.isArray(vis.axes) && vis.axes.length) grade.axes = vis.axes;
               if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
               if (vis.comment) grade.comment = vis.comment;
             }
           } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+            const rubricCtx = targetRubric
+              ? `\nGround-truth 5-axis visual key:\n- Subject (30): ${targetRubric.subject}\n- Setting (20): ${targetRubric.setting}\n- Props (20): ${targetRubric.props}\n- Style (15): ${targetRubric.style}\n- Palette (15): ${targetRubric.palette}`
+              : '';
             const llm = await LiveAI.askJSON(
-              'You are a strict, fair visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
-              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "comment": "2 short, concrete sentences: first praise what matched closely, second explain what differed or was missing and cost points."}`
+              'You are a strict, fair, quantified visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
+              `Original target image prompt: "${refPrompt}"${rubricCtx}\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "notes": {"subject": "short reason", "setting": "short reason", "props": "short reason", "style": "short reason", "palette": "short reason"}, "comment": "2-3 concrete sentences: praise the strongest matches and explain the exact missing/different details that cost points."}`
             );
             if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
               const rawScore = typeof llm.subject === 'number'
@@ -4293,6 +4832,14 @@ const Games = (() => {
                 const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
                 const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
                 const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
+                const notes = llm.notes && typeof llm.notes === 'object' ? llm.notes : {};
+                grade.axes = [
+                  { k: 'Subject', s: subS, m: 30, n: String(notes.subject || '').slice(0, 68) },
+                  { k: 'Setting', s: setS, m: 20, n: String(notes.setting || '').slice(0, 68) },
+                  { k: 'Props', s: prpS, m: 20, n: String(notes.props || '').slice(0, 68) },
+                  { k: 'Style', s: styS, m: 15, n: String(notes.style || '').slice(0, 68) },
+                  { k: 'Palette', s: palS, m: 15, n: String(notes.palette || '').slice(0, 68) },
+                ];
                 grade.breakdown = [
                   { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
                   { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
@@ -4378,14 +4925,85 @@ const Games = (() => {
         App.addScore(r.player.id, pts);
       });
 
+      // Build quantified "Why the Winner Got the Highest Score" analysis for Host & every Guest Phone!
+      winnerAnalysis = null;
+      if (finalResults.length > 0) {
+        const w = finalResults[0];
+        const r2 = finalResults[1] || null;
+        const n = finalResults.length;
+        const avgScore = Math.round(finalResults.reduce((s, r) => s + r.score, 0) / n);
+        const avgLex = Math.round(finalResults.reduce((s, r) => s + (r.lexicalPct || 0), 0) / n);
+        let headline = '';
+        if (n === 1) {
+          headline = `👑 ${w.player.name} finished with a ${w.score}% Match!`;
+        } else if (w.score === r2.score) {
+          headline = `👑 ${w.player.name} tied ${r2.player.name} at ${w.score}% Match and won #1 on the Prompt Detail tie-breaker (${w.lexicalPct || 0}% vs ${r2.lexicalPct || 0}%)!`;
+        } else {
+          headline = `👑 ${w.player.name} took #1 at ${w.score}% Match — +${w.score - r2.score}% ahead of #2 (${r2.player.name}) and +${Math.max(0, w.score - avgScore)}% above the ${avgScore}% round average!`;
+        }
+        const reasons = [];
+        if (r2 && Array.isArray(w.axes) && w.axes.length && Array.isArray(r2.axes) && r2.axes.length === w.axes.length) {
+          const diffs = w.axes.map((a, idx) => ({
+            k: a.k,
+            ws: a.s,
+            r2s: r2.axes[idx].s,
+            m: a.m,
+            diff: a.s - r2.axes[idx].s,
+          }));
+          const advantages = diffs.filter(d => d.diff > 0).sort((a, b) => b.diff - a.diff);
+          if (advantages.length) {
+            reasons.push(
+              `Biggest edge over #2 (${r2.player.name}): ${advantages.slice(0, 3).map(d => `${d.k} ${d.ws}/${d.m} vs ${d.r2s}/${d.m} (+${d.diff})`).join(' · ')}`
+            );
+          } else {
+            reasons.push(
+              `Matched #2 (${r2.player.name}) on category totals and pulled ahead via higher Prompt Detail precision (${w.lexicalPct || 0}% vs ${r2.lexicalPct || 0}%).`
+            );
+          }
+        }
+        if (Array.isArray(w.axes) && w.axes.length) {
+          const avgByAxis = w.axes.map((a, idx) => {
+            const avg = Math.round(finalResults.reduce((s, r) => s + (r.axes?.[idx]?.s || 0), 0) / n);
+            return { k: a.k, ws: a.s, m: a.m, avg, pct: a.s / Math.max(1, a.m) };
+          });
+          const strongest = [...avgByAxis].sort((a, b) => b.pct - a.pct).slice(0, 3);
+          reasons.push(
+            n >= 2
+              ? `Strongest rubric scores: ${strongest.map(a => `${a.k} ${a.ws}/${a.m} (table avg ${a.avg}/${a.m})`).join(' · ')}`
+              : `Rubric breakdown: ${strongest.map(a => `${a.k} ${a.ws}/${a.m}`).join(' · ')}`
+          );
+        }
+        if (Array.isArray(w.checklistHits) && w.checklistHits.length) {
+          const r2HitLabels = new Set((r2?.checklistHits || []).map(h => h.label));
+          const uniqueToWinner = r2 ? w.checklistHits.filter(h => !r2HitLabels.has(h.label)) : [];
+          if (uniqueToWinner.length) {
+            reasons.push(
+              `Spotted key visual details #2 (${r2.player.name}) missed: ${uniqueToWinner.slice(0, 4).map(h => `${h.label} (+${h.weight})`).join(', ')}`
+            );
+          } else {
+            const totalChecks = w.checklistHits.length + (w.checklistMisses?.length || 0);
+            reasons.push(
+              `Captured ${w.checklistHits.length}/${totalChecks} key visual elements: ${w.checklistHits.slice(0, 4).map(h => h.label).join(', ')}`
+            );
+          }
+        }
+        if (n >= 2) {
+          reasons.push(
+            `Prompt detail coverage: ${w.lexicalPct || 0}% vs #2's ${r2.lexicalPct || 0}% (table avg: ${avgLex}%).`
+          );
+        }
+        winnerAnalysis = { headline, reasons };
+      }
+
       // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
       const fullPayload = {
         roundId,
+        wa: winnerAnalysis,
         items: finalResults.map((r, i) => ({
           ...toCompactResult(r, i),
           p: r.prompt || '',
           c: r.comment || '',
-          bd: (r.breakdown || []).slice(0, 6),
+          bd: (r.breakdown || []).slice(0, 7),
         })),
       };
       resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}.json`);
@@ -4623,6 +5241,25 @@ const Games = (() => {
         const hasVision = gradedResults.some(r => r.scoringMode === 'vision');
         const totalN = gradedResults.length;
         const leaderName = gradedResults[0]?.player?.name || '';
+        const renderHostAxes = (axes) => {
+          if (!Array.isArray(axes) || !axes.length) return '';
+          return `
+            <div class="axis-grid">
+              ${axes.map(a => {
+                const pct = Math.max(0, Math.min(100, Math.round((a.s / Math.max(1, a.m)) * 100)));
+                const color = pct >= 75 ? 'var(--sage)' : pct >= 45 ? 'var(--gold)' : 'var(--cranberry)';
+                return `
+                  <div class="axis-row">
+                    <div class="axis-head">
+                      <span>${esc(a.k)}</span>
+                      <span class="mono" style="color:${color};">${a.s}/${a.m} pts (${pct}%)</span>
+                    </div>
+                    <div class="axis-track"><div class="axis-fill" style="width:${pct}%;background:${color};"></div></div>
+                    ${a.n ? `<div class="axis-note">${esc(a.n)}</div>` : ''}
+                  </div>`;
+              }).join('')}
+            </div>`;
+        };
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
@@ -4635,6 +5272,16 @@ const Games = (() => {
                 <button class="btn btn-primary" id="clone-play-again">Next Round →</button>
               </div>
             </div>
+
+            ${winnerAnalysis && gradedResults[0] ? `
+              <div class="winner-why-box">
+                <div class="why-title">🏅 Why ${esc(gradedResults[0].player.avatar)} ${esc(leaderName)} Got the Highest Score</div>
+                <div class="small" style="font-weight:700;color:var(--ink);">${esc(winnerAnalysis.headline)}</div>
+                ${Array.isArray(winnerAnalysis.reasons) && winnerAnalysis.reasons.length ? `
+                  <ul>${winnerAnalysis.reasons.map(line => `<li>${esc(line)}</li>`).join('')}</ul>
+                ` : ''}
+              </div>
+            ` : ''}
 
             <div class="card-warm stack-sm">
               <div class="row-between">
@@ -4653,8 +5300,8 @@ const Games = (() => {
                 <div class="guide-item">
                   <strong>1. Match % (0–100%)</strong><br/>
                   ${hasVision
-                    ? 'AI Vision compares each generated image to the original on 5 axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
-                    : 'Grades each prompt on <strong>5 Key Scene Details (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> comparing words to the original scene.'}
+                    ? 'AI Vision compares each generated image to the original on 5 quantified axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
+                    : 'Grades each prompt against a quantified <strong>100-pt Visual Checklist (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> across all 5 visual axes.'}
                 </div>
                 <div class="guide-item">
                   <strong>2. Leaderboard Points</strong><br/>
@@ -4731,7 +5378,8 @@ const Games = (() => {
                       ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
                       ${r.breakdown.map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
                     </div>
-                    <div class="judge-box">🤖 <strong>Why this score:</strong> ${esc(r.comment || 'Graded on visual match and prompt detail.')}</div>
+                    ${renderHostAxes(r.axes)}
+                    <div class="judge-box">🤖 <strong>Detailed Score Critique:</strong> ${esc(r.comment || 'Graded on quantified 5-axis match and prompt detail.')}</div>
                     <div class="score-math-box">
                       ${matchLine ? `<div>${matchLine}</div>` : ''}
                       <div>${ptsLine}</div>
@@ -4752,6 +5400,7 @@ const Games = (() => {
           customTargetImg = null;
           customTargetThumb = null;
           customTargetUrl = null;
+          winnerAnalysis = null;
           drafts = {};
           gradingStatus = '';
           nextChallenge();
@@ -7377,6 +8026,8 @@ const App = (() => {
       return localGenCache[k];
     }
 
+    const winnerAnalysisByRound = {};
+
     function unpackCompactResult(r) {
       return {
         rank: r.rk,
@@ -7395,6 +8046,7 @@ const App = (() => {
         marginOrGap: typeof r.gu === 'number' ? r.gu : null,
         aboveName: r.an || '',
         tieBreakNote: r.tb || '',
+        axes: Array.isArray(r.ax) ? r.ax : [],
         comment: r.c || '',
         imgSource: r.src || 'builtin',
         imgUrl: r.url || null,
@@ -7402,6 +8054,26 @@ const App = (() => {
         autoCollected: !!r.auto,
         breakdown: Array.isArray(r.bd) ? r.bd : [],
       };
+    }
+
+    function renderAxesGridHtml(axes) {
+      if (!Array.isArray(axes) || !axes.length) return '';
+      return `
+        <div class="axis-grid">
+          ${axes.map(a => {
+            const pct = Math.max(0, Math.min(100, Math.round((a.s / Math.max(1, a.m)) * 100)));
+            const color = pct >= 75 ? 'var(--sage)' : pct >= 45 ? 'var(--gold)' : 'var(--cranberry)';
+            return `
+              <div class="axis-row">
+                <div class="axis-head">
+                  <span>${esc(a.k)}</span>
+                  <span class="mono" style="color:${color};">${a.s}/${a.m} pts (${pct}%)</span>
+                </div>
+                <div class="axis-track"><div class="axis-fill" style="width:${pct}%;background:${color};"></div></div>
+                ${a.n ? `<div class="axis-note">${esc(a.n)}</div>` : ''}
+              </div>`;
+          }).join('')}
+        </div>`;
     }
 
     function normalizeResults(payload) {
@@ -7524,7 +8196,8 @@ const App = (() => {
               ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
               ${(r.breakdown || []).map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
             </div>
-            <div class="judge-box">🤖 <strong>Why this score:</strong> ${esc(r.comment || 'Graded on visual match and prompt detail.')}</div>
+            ${renderAxesGridHtml(r.axes)}
+            <div class="judge-box">🤖 <strong>Detailed Score Critique:</strong> ${esc(r.comment || 'Graded on quantified 5-axis match and prompt detail.')}</div>
             <div class="score-math-box">
               ${matchLine ? `<div>${matchLine}</div>` : ''}
               <div>${ptsLine}</div>
@@ -7542,6 +8215,7 @@ const App = (() => {
         const res = await fetch(url);
         if (!res.ok) { fetchedResultsUrls.delete(url); return; }
         const data = await res.json();
+        if (data && data.wa) winnerAnalysisByRound[roundId] = data.wa;
         if (data && Array.isArray(data.items)) {
           if (!cloneResultsByRound[roundId]) cloneResultsByRound[roundId] = new Map();
           for (const r of data.items) {
@@ -7579,11 +8253,17 @@ const App = (() => {
           if (msg.stateSeq) lastHostSeq = msg.stateSeq;
         }
         hostState = msg;
-        if (msg.game === 'promptClone' && msg.phase === 'results' && msg.payload?.resultsUrl) {
-          fetchAtomicResults(msg.payload.roundId, msg.payload.resultsUrl);
+        if (msg.game === 'promptClone' && msg.phase === 'results') {
+          if (msg.payload?.winnerAnalysis && msg.payload?.roundId) {
+            winnerAnalysisByRound[msg.payload.roundId] = msg.payload.winnerAnalysis;
+          }
+          if (msg.payload?.resultsUrl) {
+            fetchAtomicResults(msg.payload.roundId, msg.payload.resultsUrl);
+          }
         }
         renderPhone();
       } else if ((msg.type === 'CLONE_RESULTS_FULL' || msg.type === 'CLONE_RESULTS_BATCH') && msg.roundId && Array.isArray(msg.items)) {
+        if (msg.wa) winnerAnalysisByRound[msg.roundId] = msg.wa;
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
         for (const r of msg.items) {
           cloneResultsByRound[msg.roundId].set(r.id, unpackCompactResult(r));
@@ -7831,12 +8511,22 @@ const App = (() => {
         const hasVision = items.some(r => r.scoringMode === 'vision');
         const myStandingSummary = myItem ? formatStandingText(myItem, myItem.rank, items, expectedTotal) : '';
         const myMath = myItem ? formatScoreMathLines(myItem, myItem.rank) : null;
+        const wa = payload.winnerAnalysis || winnerAnalysisByRound[payload.roundId] || null;
         body = `
           <div class="stack fade-in">
             ${winner ? `
               <div class="card center stack-sm" style="border:2px solid var(--gold);">
                 <div style="font-size:2.1rem;">👑🏆</div>
                 <h2 style="margin:0;">Winner: ${winner.avatar || '🦃'} ${esc(winner.playerName)} (${winner.score}% Match!)</h2>
+                ${wa ? `
+                  <div class="winner-why-box" style="width:100%;">
+                    <div class="why-title">🏅 Why ${esc(winner.playerName)} Got the Highest Score</div>
+                    <div class="xs" style="font-weight:700;color:var(--ink);">${esc(wa.headline)}</div>
+                    ${Array.isArray(wa.reasons) && wa.reasons.length ? `
+                      <ul>${wa.reasons.map(line => `<li>${esc(line)}</li>`).join('')}</ul>
+                    ` : ''}
+                  </div>
+                ` : ''}
                 ${myItem ? `
                   <div class="standing-bar ${myItem.rank === 0 ? 'first' : ''}" style="justify-content:center;width:100%;">
                     <span><strong>Your Standing:</strong> ${myStandingSummary} · ${myItem.score}% Match</span>
@@ -7847,7 +8537,7 @@ const App = (() => {
                     <div>${myMath.ptsLine}</div>
                   </div>
                 ` : ''}
-                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; score breakdowns ranked below!</p>
+                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; quantified score breakdowns ranked below!</p>
               </div>
             ` : ''}
 
@@ -7860,8 +8550,8 @@ const App = (() => {
                 <div class="guide-item">
                   <strong>1. Match % (0–100%)</strong><br/>
                   ${hasVision
-                    ? 'AI Vision compares your generated picture to the original on 5 axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
-                    : 'Grades your prompt on <strong>5 Key Scene Details (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> comparing your words to the original scene.'}
+                    ? 'AI Vision compares your generated picture to the original on 5 quantified axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
+                    : 'Grades your prompt against a quantified <strong>100-pt Visual Checklist (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> across all 5 visual axes.'}
                 </div>
                 <div class="guide-item">
                   <strong>2. Leaderboard Points</strong><br/>

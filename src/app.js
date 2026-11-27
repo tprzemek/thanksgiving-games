@@ -1201,6 +1201,8 @@ const App = (() => {
       return localGenCache[k];
     }
 
+    const winnerAnalysisByRound = {};
+
     function unpackCompactResult(r) {
       return {
         rank: r.rk,
@@ -1219,6 +1221,7 @@ const App = (() => {
         marginOrGap: typeof r.gu === 'number' ? r.gu : null,
         aboveName: r.an || '',
         tieBreakNote: r.tb || '',
+        axes: Array.isArray(r.ax) ? r.ax : [],
         comment: r.c || '',
         imgSource: r.src || 'builtin',
         imgUrl: r.url || null,
@@ -1226,6 +1229,26 @@ const App = (() => {
         autoCollected: !!r.auto,
         breakdown: Array.isArray(r.bd) ? r.bd : [],
       };
+    }
+
+    function renderAxesGridHtml(axes) {
+      if (!Array.isArray(axes) || !axes.length) return '';
+      return `
+        <div class="axis-grid">
+          ${axes.map(a => {
+            const pct = Math.max(0, Math.min(100, Math.round((a.s / Math.max(1, a.m)) * 100)));
+            const color = pct >= 75 ? 'var(--sage)' : pct >= 45 ? 'var(--gold)' : 'var(--cranberry)';
+            return `
+              <div class="axis-row">
+                <div class="axis-head">
+                  <span>${esc(a.k)}</span>
+                  <span class="mono" style="color:${color};">${a.s}/${a.m} pts (${pct}%)</span>
+                </div>
+                <div class="axis-track"><div class="axis-fill" style="width:${pct}%;background:${color};"></div></div>
+                ${a.n ? `<div class="axis-note">${esc(a.n)}</div>` : ''}
+              </div>`;
+          }).join('')}
+        </div>`;
     }
 
     function normalizeResults(payload) {
@@ -1348,7 +1371,8 @@ const App = (() => {
               ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
               ${(r.breakdown || []).map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
             </div>
-            <div class="judge-box">🤖 <strong>Why this score:</strong> ${esc(r.comment || 'Graded on visual match and prompt detail.')}</div>
+            ${renderAxesGridHtml(r.axes)}
+            <div class="judge-box">🤖 <strong>Detailed Score Critique:</strong> ${esc(r.comment || 'Graded on quantified 5-axis match and prompt detail.')}</div>
             <div class="score-math-box">
               ${matchLine ? `<div>${matchLine}</div>` : ''}
               <div>${ptsLine}</div>
@@ -1366,6 +1390,7 @@ const App = (() => {
         const res = await fetch(url);
         if (!res.ok) { fetchedResultsUrls.delete(url); return; }
         const data = await res.json();
+        if (data && data.wa) winnerAnalysisByRound[roundId] = data.wa;
         if (data && Array.isArray(data.items)) {
           if (!cloneResultsByRound[roundId]) cloneResultsByRound[roundId] = new Map();
           for (const r of data.items) {
@@ -1403,11 +1428,17 @@ const App = (() => {
           if (msg.stateSeq) lastHostSeq = msg.stateSeq;
         }
         hostState = msg;
-        if (msg.game === 'promptClone' && msg.phase === 'results' && msg.payload?.resultsUrl) {
-          fetchAtomicResults(msg.payload.roundId, msg.payload.resultsUrl);
+        if (msg.game === 'promptClone' && msg.phase === 'results') {
+          if (msg.payload?.winnerAnalysis && msg.payload?.roundId) {
+            winnerAnalysisByRound[msg.payload.roundId] = msg.payload.winnerAnalysis;
+          }
+          if (msg.payload?.resultsUrl) {
+            fetchAtomicResults(msg.payload.roundId, msg.payload.resultsUrl);
+          }
         }
         renderPhone();
       } else if ((msg.type === 'CLONE_RESULTS_FULL' || msg.type === 'CLONE_RESULTS_BATCH') && msg.roundId && Array.isArray(msg.items)) {
+        if (msg.wa) winnerAnalysisByRound[msg.roundId] = msg.wa;
         if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
         for (const r of msg.items) {
           cloneResultsByRound[msg.roundId].set(r.id, unpackCompactResult(r));
@@ -1655,12 +1686,22 @@ const App = (() => {
         const hasVision = items.some(r => r.scoringMode === 'vision');
         const myStandingSummary = myItem ? formatStandingText(myItem, myItem.rank, items, expectedTotal) : '';
         const myMath = myItem ? formatScoreMathLines(myItem, myItem.rank) : null;
+        const wa = payload.winnerAnalysis || winnerAnalysisByRound[payload.roundId] || null;
         body = `
           <div class="stack fade-in">
             ${winner ? `
               <div class="card center stack-sm" style="border:2px solid var(--gold);">
                 <div style="font-size:2.1rem;">👑🏆</div>
                 <h2 style="margin:0;">Winner: ${winner.avatar || '🦃'} ${esc(winner.playerName)} (${winner.score}% Match!)</h2>
+                ${wa ? `
+                  <div class="winner-why-box" style="width:100%;">
+                    <div class="why-title">🏅 Why ${esc(winner.playerName)} Got the Highest Score</div>
+                    <div class="xs" style="font-weight:700;color:var(--ink);">${esc(wa.headline)}</div>
+                    ${Array.isArray(wa.reasons) && wa.reasons.length ? `
+                      <ul>${wa.reasons.map(line => `<li>${esc(line)}</li>`).join('')}</ul>
+                    ` : ''}
+                  </div>
+                ` : ''}
                 ${myItem ? `
                   <div class="standing-bar ${myItem.rank === 0 ? 'first' : ''}" style="justify-content:center;width:100%;">
                     <span><strong>Your Standing:</strong> ${myStandingSummary} · ${myItem.score}% Match</span>
@@ -1671,7 +1712,7 @@ const App = (() => {
                     <div>${myMath.ptsLine}</div>
                   </div>
                 ` : ''}
-                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; score breakdowns ranked below!</p>
+                <p class="xs muted" style="margin:0;">All ${expectedTotal} participants' AI images, prompts &amp; quantified score breakdowns ranked below!</p>
               </div>
             ` : ''}
 
@@ -1684,8 +1725,8 @@ const App = (() => {
                 <div class="guide-item">
                   <strong>1. Match % (0–100%)</strong><br/>
                   ${hasVision
-                    ? 'AI Vision compares your generated picture to the original on 5 axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
-                    : 'Grades your prompt on <strong>5 Key Scene Details (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> comparing your words to the original scene.'}
+                    ? 'AI Vision compares your generated picture to the original on 5 quantified axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
+                    : 'Grades your prompt against a quantified <strong>100-pt Visual Checklist (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> across all 5 visual axes.'}
                 </div>
                 <div class="guide-item">
                   <strong>2. Leaderboard Points</strong><br/>

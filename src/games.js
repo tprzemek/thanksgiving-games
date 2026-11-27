@@ -26,7 +26,10 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let deck = shuffle(GAME_DATA.promptClone.challenges.map((_, i) => i));
+    const allIdxs = GAME_DATA.promptClone.challenges.map((_, i) => i);
+    const freshIdxs = shuffle(allIdxs.filter(i => i >= 20));
+    const classicIdxs = shuffle(allIdxs.filter(i => i < 20));
+    let deck = [...freshIdxs, ...classicIdxs];
     let deckPos = 0;
     let idx = deck[deckPos];
     let phase = 'lobby'; // lobby | writing | collecting | pass_input | grading | results
@@ -150,19 +153,28 @@ const Games = (() => {
         g1: r.gapToFirst ?? 0,
         gu: r.marginOrGap ?? 0,
         an: String(r.aboveName || '').slice(0, 18),
-        c: String(r.comment || '').slice(0, 260),
+        c: String(r.comment || '').slice(0, 320),
         src: r.imgSource || 'builtin',
       };
       if (r.tieBreakNote) item.tb = String(r.tieBreakNote).slice(0, 100);
+      if (Array.isArray(r.axes) && r.axes.length) {
+        item.ax = r.axes.slice(0, 5).map(a => ({
+          k: a.k,
+          s: a.s,
+          m: a.m,
+          n: String(a.n || '').slice(0, 68),
+        }));
+      }
       const directUrl = r.sharedUrl || r.aiUrl || null;
       if (directUrl) item.url = directUrl;
       else if (r.aiDataUrl) item.k = `res_${roundId}_${r.player.id}`;
       if (r.autoCollected) item.auto = 1;
-      if (Array.isArray(r.breakdown) && r.breakdown.length) item.bd = r.breakdown.slice(0, 6);
+      if (Array.isArray(r.breakdown) && r.breakdown.length) item.bd = r.breakdown.slice(0, 7);
       return item;
     }
 
     let resultsUrl = null; // Atomic hosted JSON containing ALL ranked participants + direct image URLs
+    let winnerAnalysis = null; // Quantified "Why #1 Got the Highest Score" summary for Host & Phones
 
     function broadcastPhoneState() {
       if (broadcastDebounce) { clearTimeout(broadcastDebounce); broadcastDebounce = null; }
@@ -186,6 +198,7 @@ const Games = (() => {
         originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
         totalResults: phase === 'results' ? gradedResults.length : 0,
         resultsUrl: phase === 'results' ? resultsUrl : null,
+        winnerAnalysis: phase === 'results' ? winnerAnalysis : null,
         results: inlineResults,
       });
     }
@@ -204,13 +217,14 @@ const Games = (() => {
         ...toCompactResult(r, i),
         p: r.prompt || '',
         c: r.comment || '',
-        bd: (r.breakdown || []).slice(0, 6),
+        bd: (r.breakdown || []).slice(0, 7),
       }));
       // Over unlimited real-time WSS MQTT (or BroadcastChannel), send ALL ranked results atomically (retained!)
       if (!resultsUrl) {
         await RoomSync.send({
           type: 'CLONE_RESULTS_FULL',
           roundId,
+          wa: winnerAnalysis,
           items: fullItems,
         });
       }
@@ -422,6 +436,9 @@ const Games = (() => {
       let completedCount = 0;
       let aiWarning = '';
 
+      const targetRubric = customTargetImg ? null : (target.rubric || null);
+      const targetChecklist = customTargetImg ? null : (target.checklist || null);
+
       async function processEntry(i, pid, sub) {
         const players = App.getPlayers();
         const p = players.find(x => x.id === pid) || {
@@ -433,7 +450,7 @@ const Games = (() => {
         let aiImg = { url: null, dataUrl: null, source: 'builtin', error: null };
         let sharedUrl = null;
         let hiResDataUrl = null;
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, customTargetImg ? null : target.checklist);
+        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas, targetChecklist, targetRubric);
 
         try {
           // 1. Generate real AI image (Google Nano Banana / OpenAI DALL-E 3 / Pollinations)
@@ -459,19 +476,23 @@ const Games = (() => {
           grade.primaryScore = grade.semanticPct ?? grade.score;
           if (liveCfg.provider === 'gemini' && liveCfg.apiKey && targetVisionDataUrl && aiImg.dataUrl) {
             const playerThumb = await makeThumb(aiImg.dataUrl, 420, 0.72);
-            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name);
+            const vis = await LiveAI.gradeImagesWithVision(targetVisionDataUrl, playerThumb, refPrompt, sub.text, p.name, targetRubric);
             if (vis && typeof vis.score === 'number') {
               // Blend 88% strict 5-axis visual score + 12% prompt-detail precision for fair, discriminating spread
               grade.scoringMode = 'vision';
               grade.primaryScore = vis.visionScore ?? vis.score;
               grade.score = Math.max(5, Math.min(99, Math.round(vis.score * 0.88 + lexPct * 0.12)));
+              if (Array.isArray(vis.axes) && vis.axes.length) grade.axes = vis.axes;
               if (Array.isArray(vis.breakdown) && vis.breakdown.length) grade.breakdown = vis.breakdown;
               if (vis.comment) grade.comment = vis.comment;
             }
           } else if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
+            const rubricCtx = targetRubric
+              ? `\nGround-truth 5-axis visual key:\n- Subject (30): ${targetRubric.subject}\n- Setting (20): ${targetRubric.setting}\n- Props (20): ${targetRubric.props}\n- Style (15): ${targetRubric.style}\n- Palette (15): ${targetRubric.palette}`
+              : '';
             const llm = await LiveAI.askJSON(
-              'You are a strict, fair visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
-              `Original target image prompt: "${refPrompt}"\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "comment": "2 short, concrete sentences: first praise what matched closely, second explain what differed or was missing and cost points."}`
+              'You are a strict, fair, quantified visual art judge for Prompt Clone. Grade strictly across 5 axes: subject(0-30), setting(0-20), props(0-20), style(0-15), palette(0-15). Use exact discriminating integers across 10-98 — NEVER cluster scores at 70!',
+              `Original target image prompt: "${refPrompt}"${rubricCtx}\nPlayer "${p.name}" wrote: "${sub.text}"\nReturn JSON: {"subject": int, "setting": int, "props": int, "style": int, "palette": int, "notes": {"subject": "short reason", "setting": "short reason", "props": "short reason", "style": "short reason", "palette": "short reason"}, "comment": "2-3 concrete sentences: praise the strongest matches and explain the exact missing/different details that cost points."}`
             );
             if (llm && (typeof llm.subject === 'number' || typeof llm.score === 'number')) {
               const rawScore = typeof llm.subject === 'number'
@@ -486,6 +507,14 @@ const Games = (() => {
                 const prpS = Math.max(0, Math.min(20, Math.round(llm.props || 0)));
                 const styS = Math.max(0, Math.min(15, Math.round(llm.style || 0)));
                 const palS = Math.max(0, Math.min(15, Math.round(llm.palette || 0)));
+                const notes = llm.notes && typeof llm.notes === 'object' ? llm.notes : {};
+                grade.axes = [
+                  { k: 'Subject', s: subS, m: 30, n: String(notes.subject || '').slice(0, 68) },
+                  { k: 'Setting', s: setS, m: 20, n: String(notes.setting || '').slice(0, 68) },
+                  { k: 'Props', s: prpS, m: 20, n: String(notes.props || '').slice(0, 68) },
+                  { k: 'Style', s: styS, m: 15, n: String(notes.style || '').slice(0, 68) },
+                  { k: 'Palette', s: palS, m: 15, n: String(notes.palette || '').slice(0, 68) },
+                ];
                 grade.breakdown = [
                   { label: `Subject ${subS}/30`, hit: subS >= 23, partial: subS >= 14 && subS < 23 },
                   { label: `Setting ${setS}/20`, hit: setS >= 15, partial: setS >= 9 && setS < 15 },
@@ -571,14 +600,85 @@ const Games = (() => {
         App.addScore(r.player.id, pts);
       });
 
+      // Build quantified "Why the Winner Got the Highest Score" analysis for Host & every Guest Phone!
+      winnerAnalysis = null;
+      if (finalResults.length > 0) {
+        const w = finalResults[0];
+        const r2 = finalResults[1] || null;
+        const n = finalResults.length;
+        const avgScore = Math.round(finalResults.reduce((s, r) => s + r.score, 0) / n);
+        const avgLex = Math.round(finalResults.reduce((s, r) => s + (r.lexicalPct || 0), 0) / n);
+        let headline = '';
+        if (n === 1) {
+          headline = `👑 ${w.player.name} finished with a ${w.score}% Match!`;
+        } else if (w.score === r2.score) {
+          headline = `👑 ${w.player.name} tied ${r2.player.name} at ${w.score}% Match and won #1 on the Prompt Detail tie-breaker (${w.lexicalPct || 0}% vs ${r2.lexicalPct || 0}%)!`;
+        } else {
+          headline = `👑 ${w.player.name} took #1 at ${w.score}% Match — +${w.score - r2.score}% ahead of #2 (${r2.player.name}) and +${Math.max(0, w.score - avgScore)}% above the ${avgScore}% round average!`;
+        }
+        const reasons = [];
+        if (r2 && Array.isArray(w.axes) && w.axes.length && Array.isArray(r2.axes) && r2.axes.length === w.axes.length) {
+          const diffs = w.axes.map((a, idx) => ({
+            k: a.k,
+            ws: a.s,
+            r2s: r2.axes[idx].s,
+            m: a.m,
+            diff: a.s - r2.axes[idx].s,
+          }));
+          const advantages = diffs.filter(d => d.diff > 0).sort((a, b) => b.diff - a.diff);
+          if (advantages.length) {
+            reasons.push(
+              `Biggest edge over #2 (${r2.player.name}): ${advantages.slice(0, 3).map(d => `${d.k} ${d.ws}/${d.m} vs ${d.r2s}/${d.m} (+${d.diff})`).join(' · ')}`
+            );
+          } else {
+            reasons.push(
+              `Matched #2 (${r2.player.name}) on category totals and pulled ahead via higher Prompt Detail precision (${w.lexicalPct || 0}% vs ${r2.lexicalPct || 0}%).`
+            );
+          }
+        }
+        if (Array.isArray(w.axes) && w.axes.length) {
+          const avgByAxis = w.axes.map((a, idx) => {
+            const avg = Math.round(finalResults.reduce((s, r) => s + (r.axes?.[idx]?.s || 0), 0) / n);
+            return { k: a.k, ws: a.s, m: a.m, avg, pct: a.s / Math.max(1, a.m) };
+          });
+          const strongest = [...avgByAxis].sort((a, b) => b.pct - a.pct).slice(0, 3);
+          reasons.push(
+            n >= 2
+              ? `Strongest rubric scores: ${strongest.map(a => `${a.k} ${a.ws}/${a.m} (table avg ${a.avg}/${a.m})`).join(' · ')}`
+              : `Rubric breakdown: ${strongest.map(a => `${a.k} ${a.ws}/${a.m}`).join(' · ')}`
+          );
+        }
+        if (Array.isArray(w.checklistHits) && w.checklistHits.length) {
+          const r2HitLabels = new Set((r2?.checklistHits || []).map(h => h.label));
+          const uniqueToWinner = r2 ? w.checklistHits.filter(h => !r2HitLabels.has(h.label)) : [];
+          if (uniqueToWinner.length) {
+            reasons.push(
+              `Spotted key visual details #2 (${r2.player.name}) missed: ${uniqueToWinner.slice(0, 4).map(h => `${h.label} (+${h.weight})`).join(', ')}`
+            );
+          } else {
+            const totalChecks = w.checklistHits.length + (w.checklistMisses?.length || 0);
+            reasons.push(
+              `Captured ${w.checklistHits.length}/${totalChecks} key visual elements: ${w.checklistHits.slice(0, 4).map(h => h.label).join(', ')}`
+            );
+          }
+        }
+        if (n >= 2) {
+          reasons.push(
+            `Prompt detail coverage: ${w.lexicalPct || 0}% vs #2's ${r2.lexicalPct || 0}% (table avg: ${avgLex}%).`
+          );
+        }
+        winnerAnalysis = { headline, reasons };
+      }
+
       // Upload ONE atomic JSON containing ALL ranked participants + full prompts + direct Nano Banana image URLs!
       const fullPayload = {
         roundId,
+        wa: winnerAnalysis,
         items: finalResults.map((r, i) => ({
           ...toCompactResult(r, i),
           p: r.prompt || '',
           c: r.comment || '',
-          bd: (r.breakdown || []).slice(0, 6),
+          bd: (r.breakdown || []).slice(0, 7),
         })),
       };
       resultsUrl = await RoomSync.uploadJSON(fullPayload, `results_${roundId}.json`);
@@ -816,6 +916,25 @@ const Games = (() => {
         const hasVision = gradedResults.some(r => r.scoringMode === 'vision');
         const totalN = gradedResults.length;
         const leaderName = gradedResults[0]?.player?.name || '';
+        const renderHostAxes = (axes) => {
+          if (!Array.isArray(axes) || !axes.length) return '';
+          return `
+            <div class="axis-grid">
+              ${axes.map(a => {
+                const pct = Math.max(0, Math.min(100, Math.round((a.s / Math.max(1, a.m)) * 100)));
+                const color = pct >= 75 ? 'var(--sage)' : pct >= 45 ? 'var(--gold)' : 'var(--cranberry)';
+                return `
+                  <div class="axis-row">
+                    <div class="axis-head">
+                      <span>${esc(a.k)}</span>
+                      <span class="mono" style="color:${color};">${a.s}/${a.m} pts (${pct}%)</span>
+                    </div>
+                    <div class="axis-track"><div class="axis-fill" style="width:${pct}%;background:${color};"></div></div>
+                    ${a.n ? `<div class="axis-note">${esc(a.n)}</div>` : ''}
+                  </div>`;
+              }).join('')}
+            </div>`;
+        };
         root.innerHTML = `
           <div class="stack fade-in">
             <div class="row-between">
@@ -828,6 +947,16 @@ const Games = (() => {
                 <button class="btn btn-primary" id="clone-play-again">Next Round →</button>
               </div>
             </div>
+
+            ${winnerAnalysis && gradedResults[0] ? `
+              <div class="winner-why-box">
+                <div class="why-title">🏅 Why ${esc(gradedResults[0].player.avatar)} ${esc(leaderName)} Got the Highest Score</div>
+                <div class="small" style="font-weight:700;color:var(--ink);">${esc(winnerAnalysis.headline)}</div>
+                ${Array.isArray(winnerAnalysis.reasons) && winnerAnalysis.reasons.length ? `
+                  <ul>${winnerAnalysis.reasons.map(line => `<li>${esc(line)}</li>`).join('')}</ul>
+                ` : ''}
+              </div>
+            ` : ''}
 
             <div class="card-warm stack-sm">
               <div class="row-between">
@@ -846,8 +975,8 @@ const Games = (() => {
                 <div class="guide-item">
                   <strong>1. Match % (0–100%)</strong><br/>
                   ${hasVision
-                    ? 'AI Vision compares each generated image to the original on 5 axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
-                    : 'Grades each prompt on <strong>5 Key Scene Details (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> comparing words to the original scene.'}
+                    ? 'AI Vision compares each generated image to the original on 5 quantified axes: <strong>Subject (/30)</strong>, <strong>Setting (/20)</strong>, <strong>Props (/20)</strong>, <strong>Style (/15)</strong>, <strong>Palette (/15)</strong> = <strong>88%</strong> + <strong>12%</strong> Prompt Detail.'
+                    : 'Grades each prompt against a quantified <strong>100-pt Visual Checklist (65%)</strong> + <strong>Prompt Detail Coverage (35%)</strong> across all 5 visual axes.'}
                 </div>
                 <div class="guide-item">
                   <strong>2. Leaderboard Points</strong><br/>
@@ -924,7 +1053,8 @@ const Games = (() => {
                       ${r.autoCollected ? `<span class="tag">⏱️ Auto-saved</span>` : ''}
                       ${r.breakdown.map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
                     </div>
-                    <div class="judge-box">🤖 <strong>Why this score:</strong> ${esc(r.comment || 'Graded on visual match and prompt detail.')}</div>
+                    ${renderHostAxes(r.axes)}
+                    <div class="judge-box">🤖 <strong>Detailed Score Critique:</strong> ${esc(r.comment || 'Graded on quantified 5-axis match and prompt detail.')}</div>
                     <div class="score-math-box">
                       ${matchLine ? `<div>${matchLine}</div>` : ''}
                       <div>${ptsLine}</div>
@@ -945,6 +1075,7 @@ const Games = (() => {
           customTargetImg = null;
           customTargetThumb = null;
           customTargetUrl = null;
+          winnerAnalysis = null;
           drafts = {};
           gradingStatus = '';
           nextChallenge();

@@ -2410,57 +2410,63 @@ const GAME_DATA = {
         id: 'clone-1',
         title: 'Skateboard Sunset Turkey',
         difficulty: 'Warm-Up',
-        secretPrompt: 'A turkey wearing sunglasses riding a skateboard at sunset with falling leaves',
-        tips: 'Look closely at what it is wearing, standing on, the sky, and what is floating in the air!',
+        asset: 'assets/clone-1.jpg',
+        secretPrompt: 'A cheerful cartoon turkey wearing sunglasses riding a red skateboard on a winding road at golden orange sunset with falling autumn leaves',
+        tips: 'Spot the animal, eyewear, vehicle color, sky lighting, and what is swirling through the air!',
       },
       {
         id: 'clone-2',
         title: 'Martian Pie Mission',
         difficulty: 'Medium',
-        secretPrompt: 'An astronaut and pumpkin pie in outer space with fireworks',
-        tips: 'Count the subjects, check the planet background, and notice the sky celebration!',
+        asset: 'assets/clone-2.jpg',
+        secretPrompt: 'A cute astronaut in a white spacesuit holding a giant slice of pumpkin pie with whipped cream on Mars in outer space with ringed planet and fireworks',
+        tips: 'Notice who is holding what, the red cratered planet, what is in the sky, and the 3D illustration style!',
       },
       {
         id: 'clone-3',
         title: 'Royal Kitchen Cat',
         difficulty: 'Medium',
-        secretPrompt: 'A golden cat wearing a crown beside a gravy boat in the kitchen with candles',
-        tips: 'Spot the exact animal, color, headgear, table object, setting, and lighting prop!',
+        asset: 'assets/clone-3.jpg',
+        secretPrompt: 'A fluffy golden orange tabby cat wearing a royal gold crown sitting on a checkered kitchen table beside a steaming gravy boat and two glowing candles oil painting',
+        tips: 'Spot the exact animal, color, headgear, table objects, lighting, and painting style!',
       },
       {
         id: 'clone-4',
+        title: 'Neon Cyberpunk Bot',
+        difficulty: 'Tricky',
+        asset: 'assets/clone-4.jpg',
+        secretPrompt: 'A neon cyberpunk retro silver robot playing an orange electric guitar on a city skyline rooftop at night with three colorful floating balloons',
+        tips: 'Catch the glowing neon style, instrument, floating props, time of day, and background skyline!',
+      },
+      {
+        id: 'clone-5',
+        title: 'Snowy Wizard Pup',
+        difficulty: 'Medium',
+        asset: 'assets/clone-5.jpg',
+        secretPrompt: 'Watercolor illustration of a golden retriever puppy wearing a blue starry wizard hat beside a glowing carved orange pumpkin on snowy mountains with snowfall',
+        tips: 'Check the soft watercolor style, dog breed, hat, glowing companion, mountain terrain, and weather!',
+      },
+      {
+        id: 'clone-6',
+        title: 'Beach Party UFO',
+        difficulty: 'Medium',
+        asset: 'assets/clone-6.jpg',
+        secretPrompt: 'A cartoon silver UFO beaming a green ray onto a sunny tropical beach with palm trees where a turkey wearing sunglasses relaxes under a rainbow',
+        tips: 'Two very different visitors on vacation — catch the glowing beam, eyewear, beach props, and sky arch!',
+      },
+      {
+        id: 'clone-7',
         title: 'Retro Arcade Pilgrim',
         difficulty: 'Tricky',
         secretPrompt: 'Pixel art pilgrim riding a rocket at starry night with rainbow',
         tips: 'Notice the ART STYLE first! Then catch every object and sky detail.',
       },
       {
-        id: 'clone-5',
-        title: 'Snowy Wizard Pup',
-        difficulty: 'Medium',
-        secretPrompt: 'A dog wearing a wizard hat with a pumpkin in snowy mountains and snowfall',
-        tips: 'Check the hat, companion object, mountain terrain, and weather!',
-      },
-      {
-        id: 'clone-6',
-        title: 'Neon Cyberpunk Bot',
-        difficulty: 'Tricky',
-        secretPrompt: 'Neon glowing robot playing guitar in a city skyline with balloons',
-        tips: 'Catch the art style, instrument, floating props, and background skyline!',
-      },
-      {
-        id: 'clone-7',
+        id: 'clone-8',
         title: 'Vintage Dragon Chef',
         difficulty: 'Tricky',
         secretPrompt: 'Vintage sepia dragon wearing a chef hat juggling cranberries near a volcano',
         tips: 'Notice the old-timey photo filter, the hat, the floating red berries, and the fiery background!',
-      },
-      {
-        id: 'clone-8',
-        title: 'Beach Party UFO',
-        difficulty: 'Medium',
-        secretPrompt: 'An alien UFO and a turkey wearing sunglasses on a sunny beach with a rainbow',
-        tips: 'Two very different visitors on vacation — catch the eyewear and sky arch!',
       },
       {
         id: 'clone-9',
@@ -2498,7 +2504,8 @@ if (typeof module !== 'undefined') module.exports = GAME_DATA;
 
 
 // 3-Tier Multi-Device QR Room Sync (LAN Server -> Cloud Relay -> Local BroadcastChannel)
-// + Optional Live AI Engine (Gemini / OpenAI + Live Image Generation)
+// + Chunked Image Sync (stays safely under ntfy.sh 4KB message limit)
+// + Real AI Image Generation & Vision/LLM Bridge (Gemini / OpenAI / Pollinations / Built-In)
 
 const RoomSync = (() => {
   const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -2515,16 +2522,38 @@ const RoomSync = (() => {
   let bc = null;
   let listeners = [];
   let seenIds = new Set();
+  const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
   const clientId = 'c_' + Math.random().toString(36).slice(2, 9);
 
   function emit(msg) {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 400) {
+    if (seenIds.size > 600) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
+
+    // Automatically reassemble chunked images into IMG_READY events
+    if (msg.type === 'IMG_CHUNK' && msg.imgKey && typeof msg.idx === 'number' && msg.total) {
+      let buf = chunkBuffers.get(msg.imgKey);
+      if (!buf || buf.total !== msg.total) {
+        buf = { total: msg.total, parts: new Array(msg.total).fill(null), got: 0 };
+        chunkBuffers.set(msg.imgKey, buf);
+      }
+      if (buf.parts[msg.idx] === null) {
+        buf.parts[msg.idx] = msg.data;
+        buf.got++;
+      }
+      if (buf.got === buf.total) {
+        const dataUrl = buf.parts.join('');
+        chunkBuffers.delete(msg.imgKey);
+        const readyMsg = { id: 'img_' + msg.imgKey + '_' + Date.now(), type: 'IMG_READY', imgKey: msg.imgKey, dataUrl };
+        listeners.forEach(fn => { try { fn(readyMsg); } catch (e) { console.error(e); } });
+      }
+      return;
+    }
+
     listeners.forEach(fn => {
       try { fn(msg); } catch (e) { console.error(e); }
     });
@@ -2546,12 +2575,6 @@ const RoomSync = (() => {
         }
       } catch (_) {}
 
-      // If hosted on a public HTTPS/HTTP origin (e.g., GitHub Pages), use ntfy.sh SSE relay
-      if (proto === 'https:' && !window.location.hostname.includes('localhost')) {
-        mode = 'cloud';
-        return mode;
-      }
-      // Allow cloud relay on http non-file hosts if reachable
       if (proto === 'https:' || proto === 'http:') {
         mode = 'cloud';
         return mode;
@@ -2569,7 +2592,6 @@ const RoomSync = (() => {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
 
-    // Always attach BroadcastChannel for instant same-browser multi-tab sync
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         bc = new BroadcastChannel('tg_room_' + roomCode);
@@ -2596,9 +2618,7 @@ const RoomSync = (() => {
             }
           } catch (_) {}
         };
-        es.onerror = () => {
-          // Silently keep local BroadcastChannel working if blocked by CSP/offline
-        };
+        es.onerror = () => {};
       } catch (_) {}
     }
 
@@ -2643,6 +2663,25 @@ const RoomSync = (() => {
     return msg;
   }
 
+  // Safely send a compressed JPEG dataUrl across 4KB-limited relays by chunking
+  async function sendImage(imgKey, dataUrl) {
+    if (!imgKey || !dataUrl) return;
+    const CHUNK_SIZE = 2200;
+    const total = Math.ceil(dataUrl.length / CHUNK_SIZE);
+    for (let i = 0; i < total; i++) {
+      await send({
+        type: 'IMG_CHUNK',
+        imgKey,
+        idx: i,
+        total,
+        data: dataUrl.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+      });
+      if (mode === 'cloud' && total > 3) {
+        await new Promise(r => setTimeout(r, 60));
+      }
+    }
+  }
+
   function onMessage(fn) {
     listeners.push(fn);
     return () => { listeners = listeners.filter(x => x !== fn); };
@@ -2671,6 +2710,7 @@ const RoomSync = (() => {
     connect,
     disconnect,
     send,
+    sendImage,
     onMessage,
     getJoinUrl,
     getMode: () => mode,
@@ -2680,24 +2720,52 @@ const RoomSync = (() => {
   };
 })();
 
-// Optional Live AI Client (Works 100% offline without keys; upgrades seamlessly if user adds a key)
+// Optional Real AI Engine (Gemini / OpenAI / Pollinations + Built-In Instant Fallback)
 const LiveAI = (() => {
   const STORAGE_KEY = 'tg26_ai_settings';
 
   function loadSettings() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          provider: parsed.provider || 'builtin',
+          apiKey: parsed.apiKey || '',
+          pollinationsKey: parsed.pollinationsKey || '',
+          liveImages: parsed.liveImages !== undefined ? !!parsed.liveImages : false,
+        };
+      }
     } catch (_) {}
     return {
       provider: 'builtin', // 'builtin' | 'gemini' | 'openai'
       apiKey: '',
-      liveImages: false,   // Use Pollinations.ai free live AI images when online
+      pollinationsKey: '',
+      liveImages: false,
     };
   }
 
   function saveSettings(s) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch (_) {}
+  }
+
+  function hasRealImageAI() {
+    const cfg = loadSettings();
+    return !!(
+      (cfg.provider === 'openai' && cfg.apiKey) ||
+      (cfg.provider === 'gemini' && cfg.apiKey) ||
+      cfg.pollinationsKey ||
+      cfg.liveImages
+    );
+  }
+
+  function getActiveImageLabel() {
+    const cfg = loadSettings();
+    if (cfg.provider === 'openai' && cfg.apiKey) return 'OpenAI DALL-E 3';
+    if (cfg.provider === 'gemini' && cfg.apiKey) return 'Google Gemini AI Art';
+    if (cfg.pollinationsKey) return 'Pollinations AI (Key)';
+    if (cfg.liveImages) return 'Pollinations AI (Free)';
+    return 'Built-In Instant AI Artist';
   }
 
   async function askJSON(systemPrompt, userPrompt) {
@@ -2750,11 +2818,97 @@ const LiveAI = (() => {
   }
 
   function getLiveImageUrl(prompt, seed = 42) {
-    const clean = encodeURIComponent(`${prompt}, vibrant storybook illustration, clear composition`);
-    return `https://image.pollinations.ai/prompt/${clean}?width=512&height=360&seed=${seed}&nologo=true`;
+    const cfg = loadSettings();
+    const clean = encodeURIComponent(`${prompt}, vibrant illustration, clear composition`);
+    const keyParam = cfg.pollinationsKey ? `&key=${encodeURIComponent(cfg.pollinationsKey)}` : '';
+    return `https://image.pollinations.ai/prompt/${clean}?width=512&height=360&seed=${seed}&nologo=true${keyParam}`;
   }
 
-  return { loadSettings, saveSettings, askJSON, getLiveImageUrl };
+  // Generate a real AI image using the configured provider, with safe error handling & built-in fallback
+  async function generateImage(prompt, seed = 42) {
+    const cfg = loadSettings();
+    const fullPrompt = `${prompt}. Vibrant, clear, expressive illustration, no text.`;
+
+    // 1. OpenAI DALL-E 3
+    if (cfg.provider === 'openai' && cfg.apiKey) {
+      try {
+        const res = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cfg.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'dall-e-3',
+            prompt: fullPrompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'standard',
+          }),
+        });
+        if (res.ok) {
+          const j = await res.json();
+          const url = j?.data?.[0]?.url;
+          const b64 = j?.data?.[0]?.b64_json;
+          if (url) return { url, dataUrl: null, source: 'openai' };
+          if (b64) return { url: null, dataUrl: `data:image/png;base64,${b64}`, source: 'openai' };
+        }
+      } catch (_) {}
+    }
+
+    // 2. Google Gemini Image Generation
+    if (cfg.provider === 'gemini' && cfg.apiKey) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: `Generate an image of: ${fullPrompt}` }] }],
+              generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+            }),
+          }
+        );
+        if (res.ok) {
+          const j = await res.json();
+          const parts = j?.candidates?.[0]?.content?.parts || [];
+          const imgPart = parts.find(p => p.inlineData && p.inlineData.data);
+          if (imgPart) {
+            const mime = imgPart.inlineData.mimeType || 'image/png';
+            return { url: null, dataUrl: `data:${mime};base64,${imgPart.inlineData.data}`, source: 'gemini' };
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3. Pollinations.ai (verified HTTP 200 image/* so 402 rate limits never render broken images!)
+    if (cfg.pollinationsKey || cfg.liveImages) {
+      try {
+        const url = getLiveImageUrl(prompt, seed);
+        const res = await fetch(url);
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.startsWith('image/')) {
+          const blob = await res.blob();
+          const dataUrl = await new Promise((resolve) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result);
+            fr.onerror = () => resolve(null);
+            fr.readAsDataURL(blob);
+          });
+          return { url, dataUrl, source: 'pollinations' };
+        }
+      } catch (_) {}
+    }
+
+    // 4. Always-works instant built-in AI Artist fallback
+    return { url: null, dataUrl: null, source: 'builtin' };
+  }
+
+  return {
+    loadSettings, saveSettings, hasRealImageAI, getActiveImageLabel,
+    askJSON, getLiveImageUrl, generateImage,
+  };
 })();
 
 if (typeof module !== 'undefined') module.exports = { RoomSync, LiveAI };
@@ -2788,7 +2942,7 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length);
+    let idx = Math.floor(Math.random() * 6); // Start on one of the 6 real studio AI target artworks!
     let phase = 'lobby'; // lobby | writing | pass_cover | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;
@@ -2802,6 +2956,7 @@ const Games = (() => {
     let submissions = {}; // playerId -> { text, ts }
     let passIdx = 0;
     let gradedResults = [];
+    let gradingStatus = '';
 
     function cleanup() {
       if (timer) { clearInterval(timer); timer = null; }
@@ -2816,38 +2971,75 @@ const Games = (() => {
       }
     }
 
-    function makeThumb(dataUrl, cb) {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement('canvas');
-        const maxW = 300;
-        const scale = Math.min(1, maxW / (img.width || maxW));
-        c.width = Math.max(1, Math.round((img.width || 300) * scale));
-        c.height = Math.max(1, Math.round((img.height || 200) * scale));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        cb(c.toDataURL('image/jpeg', 0.58));
-      };
-      img.onerror = () => cb(null);
-      img.src = dataUrl;
+    function makeThumb(dataUrl) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          const maxW = 320;
+          const scale = Math.min(1, maxW / (img.width || maxW));
+          c.width = Math.max(1, Math.round((img.width || 320) * scale));
+          c.height = Math.max(1, Math.round((img.height || 220) * scale));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          resolve(c.toDataURL('image/jpeg', 0.62));
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+      });
+    }
+
+    function getTargetImageHtml() {
+      if (customTargetImg) {
+        return `<img src="${customTargetImg}" alt="Target AI Image" />`;
+      }
+      if (target.asset) {
+        return `<img src="${target.asset}" alt="Target AI Image" onerror="this.src='${targetArt.dataUrl}'" />`;
+      }
+      return `<img src="${targetArt.dataUrl}" alt="Target AI Image" />`;
     }
 
     function broadcastPhoneState() {
-      const liveCfg = LiveAI.loadSettings();
-      const targetUrl = !customTargetImg && liveCfg.liveImages
-        ? LiveAI.getLiveImageUrl(target.secretPrompt, idx + 101)
-        : null;
       App.broadcastHostState('promptClone', phase, {
         roundId,
         challengeId: customTargetImg ? null : target.id,
+        asset: customTargetImg ? null : (target.asset || null),
+        hasCustomTarget: !!customTargetImg,
         title: customTargetImg ? 'Custom Target Image' : target.title,
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
         difficulty: customTargetImg ? 'Custom' : target.difficulty,
-        targetPromptSeed: idx + 101,
-        liveImageUrl: targetUrl,
-        customImageThumb: customTargetImg ? customTargetThumb : null,
         timeLeft,
         submittedIds: Object.keys(submissions),
+        gradingStatus,
+        originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
+        totalResults: phase === 'results' ? gradedResults.length : 0,
       });
+    }
+
+    async function broadcastResultsToPhones() {
+      for (let i = 0; i < gradedResults.length; i++) {
+        const r = gradedResults[i];
+        const imgKey = r.aiDataUrl ? `res_${roundId}_${r.player.id}` : null;
+        await RoomSync.send({
+          type: 'CLONE_RESULT_ITEM',
+          roundId,
+          rank: i,
+          playerId: r.player.id,
+          playerName: r.player.name,
+          avatar: r.player.avatar,
+          prompt: r.prompt,
+          score: r.score,
+          pointsAwarded: r.pointsAwarded,
+          comment: r.comment,
+          breakdown: r.breakdown,
+          imgSource: r.imgSource,
+          imgUrl: r.aiUrl || null,
+          imgKey,
+        });
+        if (imgKey && r.aiDataUrl) {
+          const thumb = await makeThumb(r.aiDataUrl);
+          if (thumb) await RoomSync.sendImage(imgKey, thumb);
+        }
+      }
     }
 
     function onPhoneAction(msg) {
@@ -2864,11 +3056,15 @@ const Games = (() => {
       buildTarget();
       roundId = Date.now();
       submissions = {};
+      gradedResults = [];
       timeLeft = durationSec;
       phase = 'writing';
       SoundFX.ding();
       SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to write an AI prompt that recreates it as closely as possible!`);
       broadcastPhoneState();
+      if (customTargetImg && customTargetThumb) {
+        RoomSync.sendImage(`target_${roundId}`, customTargetThumb);
+      }
       if (timer) clearInterval(timer);
       timer = setInterval(() => {
         timeLeft--;
@@ -2890,21 +3086,32 @@ const Games = (() => {
     async function gradeAll() {
       if (timer) { clearInterval(timer); timer = null; }
       phase = 'grading';
+      gradingStatus = 'Preparing AI art generation & resemblance grading...';
       broadcastPhoneState();
       render();
 
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
       const players = App.getPlayers();
+      const submittingPlayers = players.filter(p => submissions[p.id] && submissions[p.id].text);
       const results = [];
 
-      for (const p of players) {
+      for (let i = 0; i < submittingPlayers.length; i++) {
+        const p = submittingPlayers[i];
         const sub = submissions[p.id];
-        if (!sub || !sub.text) continue;
-        const gen = AIArt.renderDataURL(sub.text, 440, 300);
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
+        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${submittingPlayers.length})...`;
+        broadcastPhoneState();
+        const stEl = document.getElementById('clone-grading-status');
+        if (stEl) stEl.textContent = gradingStatus;
 
-        // Optional Live LLM review upgrade if user configured Gemini/OpenAI key
+        // 1. Always create instant built-in artwork as pixel baseline & fallback
+        const gen = AIArt.renderDataURL(sub.text, 440, 300);
+
+        // 2. Generate real AI image via OpenAI / Gemini / Pollinations if configured
+        const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
+
+        // 3. Grade resemblance (built-in feature + visual comparison, upgraded with LLM if configured)
+        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
         if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
           const llm = await LiveAI.askJSON(
             'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
@@ -2916,12 +3123,13 @@ const Games = (() => {
           }
         }
 
-        const liveUrl = liveCfg.liveImages ? LiveAI.getLiveImageUrl(sub.text, idx * 31 + p.name.length) : null;
         results.push({
           player: p,
           prompt: sub.text,
           dataUrl: gen.dataUrl,
-          liveUrl,
+          aiUrl: aiImg.url,
+          aiDataUrl: aiImg.dataUrl,
+          imgSource: aiImg.source,
           ...grade,
         });
       }
@@ -2938,23 +3146,23 @@ const Games = (() => {
       });
 
       phase = 'results';
+      gradingStatus = '';
       SoundFX.fanfare();
       if (results.length > 0) {
         SoundFX.speak(`Grading complete! ${results[0].player.name} wins with a ${results[0].score} percent match!`);
       }
       broadcastPhoneState();
       render();
+      // Stream every participant's result card + AI image to all connected phones!
+      broadcastResultsToPhones();
     }
 
     function render() {
       const root = App.getStage();
       const players = App.getPlayers();
-      const liveCfg = LiveAI.loadSettings();
       if (!targetArt) buildTarget();
-
-      const targetImgHtml = !customTargetImg && liveCfg.liveImages
-        ? `<img src="${LiveAI.getLiveImageUrl(target.secretPrompt, idx + 101)}" alt="Target AI Image" onerror="this.src='${targetArt.dataUrl}'" />`
-        : `<img src="${targetArt.dataUrl}" alt="Target AI Image" />`;
+      const targetImgHtml = getTargetImageHtml();
+      const aiImgLabel = LiveAI.getActiveImageLabel();
 
       if (phase === 'lobby') {
         root.innerHTML = `
@@ -2963,15 +3171,15 @@ const Games = (() => {
               <div>
                 <div class="row"><span class="tag tag-new">NEW · REVERSE PROMPT</span><span class="tag">${esc(target.difficulty)}</span></div>
                 <h2 style="margin-top:6px;">🔍 Prompt Clone!</h2>
-                <p class="muted small" style="margin:0;">Study the AI image, write a prompt to recreate it as closely as possible, then watch the AI regenerate everyone's image and grade resemblance!</p>
+                <p class="muted small" style="margin:0;">Every player sees the target image right on their phone, writes a prompt to recreate it, then everyone gets the AI-generated results gallery on their own screen!</p>
               </div>
               <button class="btn btn-sm" id="clone-next-scene">🎲 New Image</button>
             </div>
 
             <div class="card stack">
               <div class="row-between">
-                <h3>Target Image Preview: ${esc(target.title)}</h3>
-                <span class="xs muted">Secret prompt hidden until reveal</span>
+                <h3>Target Image: ${esc(target.title)}</h3>
+                <span class="tag ${LiveAI.hasRealImageAI() ? 'tag-kid' : 'tag-gold'}">🤖 ${esc(aiImgLabel)}</span>
               </div>
               <div class="art-frame">${targetImgHtml}</div>
               <div class="row-between">
@@ -2983,6 +3191,12 @@ const Games = (() => {
                 </div>
                 <button class="btn btn-primary btn-lg" id="clone-start">🚀 Start Challenge!</button>
               </div>
+              ${!LiveAI.hasRealImageAI() ? `
+                <div class="card-warm row-between" style="padding:10px 12px;">
+                  <span class="xs muted">✨ Want <strong>photorealistic AI images</strong> generated for every participant's prompt? Connect a free Gemini, OpenAI, or Pollinations key!</span>
+                  <button class="btn btn-sm" id="clone-open-ai">⚙️ Connect AI</button>
+                </div>
+              ` : ''}
             </div>
 
             <div class="card-warm stack-sm">
@@ -2993,6 +3207,9 @@ const Games = (() => {
               <input class="input" id="clone-custom-desc" placeholder="(Optional) Describe key elements in your uploaded image for AI grading..." value="${esc(customTargetDesc)}" />
             </div>
           </div>`;
+
+        const aiBtn = document.getElementById('clone-open-ai');
+        if (aiBtn) aiBtn.onclick = () => App.openSettingsModal && App.openSettingsModal();
 
         document.getElementById('clone-next-scene').onclick = () => {
           customTargetImg = null;
@@ -3010,10 +3227,10 @@ const Games = (() => {
           const f = e.target.files?.[0];
           if (!f) return;
           const reader = new FileReader();
-          reader.onload = () => {
+          reader.onload = async () => {
             customTargetImg = reader.result;
             buildTarget();
-            makeThumb(customTargetImg, (thumb) => { customTargetThumb = thumb; });
+            customTargetThumb = await makeThumb(customTargetImg);
             render();
           };
           reader.readAsDataURL(f);
@@ -3139,8 +3356,8 @@ const Games = (() => {
         root.innerHTML = `
           <div class="card center stack" style="padding:48px 20px;">
             <div style="font-size:3.2rem;">🤖🎨</div>
-            <h2>AI is Regenerating Everyone's Images & Grading...</h2>
-            <p class="muted">Comparing subjects, composition, palette, props, and art style!</p>
+            <h2>AI is Regenerating Everyone's Images &amp; Grading...</h2>
+            <p class="muted" id="clone-grading-status">${esc(gradingStatus || 'Comparing subjects, composition, palette, props, and art style!')}</p>
           </div>`;
         return;
       }
@@ -3153,22 +3370,28 @@ const Games = (() => {
                 <h2>🏆 Prompt Clone Results!</h2>
                 <p class="muted small" style="margin:0;">Original secret prompt: <strong>"${esc(customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt)}"</strong></p>
               </div>
-              <button class="btn btn-primary" id="clone-play-again">Next Round →</button>
+              <div class="row">
+                <button class="btn btn-sm" id="clone-resend">📱 Resend to Phones</button>
+                <button class="btn btn-primary" id="clone-play-again">Next Round →</button>
+              </div>
             </div>
 
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">Compare side-by-side below!</span>
+                <span class="tag tag-gold">Sent to every participant's phone!</span>
               </div>
               <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             </div>
 
             <div class="clone-gallery">
-              ${gradedResults.map((r, i) => `
+              ${gradedResults.map((r, i) => {
+                const imgSrc = r.aiDataUrl || r.aiUrl || r.dataUrl;
+                const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+                return `
                 <div class="clone-card ${i === 0 ? 'winner' : ''}">
                   <div class="art-frame" style="border:none;border-radius:0;">
-                    <img src="${r.liveUrl || r.dataUrl}" alt="${esc(r.player.name)}'s AI image" onerror="this.src='${r.dataUrl}'" />
+                    <img src="${imgSrc}" alt="${esc(r.player.name)}'s AI image" onerror="this.src='${r.dataUrl}'" />
                   </div>
                   <div class="clone-card-body">
                     <div class="row-between">
@@ -3178,17 +3401,25 @@ const Games = (() => {
                     <div class="meter-track"><div class="meter-fill" style="width:${r.score}%;background:${r.score >= 75 ? 'var(--sage)' : r.score >= 50 ? 'var(--gold)' : 'var(--cranberry)'};"></div></div>
                     <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
                     <div class="chip-wrap">
+                      <span class="tag tag-gold">🎨 ${badge}</span>
                       ${r.breakdown.map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
                     </div>
                     <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
                   </div>
-                </div>
-              `).join('')}
+                </div>`;
+              }).join('')}
             </div>
           </div>`;
 
+        document.getElementById('clone-resend').onclick = () => {
+          SoundFX.pop();
+          broadcastPhoneState();
+          broadcastResultsToPhones();
+          document.getElementById('clone-resend').textContent = '✅ Sent to Phones!';
+        };
         document.getElementById('clone-play-again').onclick = () => {
           customTargetImg = null;
+          customTargetThumb = null;
           idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
           target = GAME_DATA.promptClone.challenges[idx];
           buildTarget();
@@ -4281,6 +4512,7 @@ const Games = (() => {
       }
     }
 
+    broadcast();
     return { render, cleanup, onPhoneAction };
   }
 
@@ -4666,8 +4898,9 @@ const App = (() => {
   function addPlayer({ id, name, ageGroup = 'adult', avatar, remote = false }) {
     const clean = String(name || '').trim();
     if (!clean) return null;
-    const existing = id ? players.find(p => p.id === id) : players.find(p => p.name.toLowerCase() === clean.toLowerCase());
+    const existing = (id && players.find(p => p.id === id)) || players.find(p => p.name.toLowerCase() === clean.toLowerCase());
     if (existing) {
+      if (id && remote) existing.id = id;
       existing.name = clean;
       existing.ageGroup = ageGroup;
       if (avatar) existing.avatar = avatar;
@@ -5471,27 +5704,32 @@ const App = (() => {
             <h2>⚙️ Host &amp; AI Settings</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
-          <p class="small muted" style="margin:0;">All 6 games work <strong>100% out of the box</strong> with our Built-In Instant AI. Optionally connect a live AI key or live image generator below:</p>
+          <p class="small muted" style="margin:0;">All 6 games work out of the box with our Built-In Instant AI. To generate <strong>photorealistic AI images</strong> for every player's prompt in Prompt Clone, connect a Gemini, OpenAI, or Pollinations key:</p>
 
           <div class="stack-sm">
-            <label class="small"><strong>AI Judge &amp; Bot Provider</strong></label>
+            <label class="small"><strong>AI Judge &amp; Real Image Provider</strong></label>
             <select class="select" id="ai-provider">
               <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant AI (No Key Needed · Works Offline)</option>
-              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (gemini-2.0-flash)</option>
-              <option value="openai" ${cfg.provider === 'openai' ? 'selected' : ''}>🤖 OpenAI (gpt-4o-mini)</option>
+              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (Real AI Images + Smart Judge)</option>
+              <option value="openai" ${cfg.provider === 'openai' ? 'selected' : ''}>🤖 OpenAI (DALL-E 3 Images + GPT-4o-mini Judge)</option>
             </select>
           </div>
 
           <div class="stack-sm">
-            <label class="small"><strong>API Key (stored only in your browser)</strong></label>
-            <input type="password" class="input" id="ai-key" placeholder="Optional API key..." value="${esc(cfg.apiKey)}" />
+            <label class="small"><strong>Gemini or OpenAI API Key (stored only in your browser)</strong></label>
+            <input type="password" class="input" id="ai-key" placeholder="Paste Gemini or OpenAI API key..." value="${esc(cfg.apiKey)}" />
+          </div>
+
+          <div class="stack-sm">
+            <label class="small"><strong>Optional Pollinations.ai Key (unlimited free-tier images)</strong></label>
+            <input type="password" class="input" id="ai-poll-key" placeholder="Optional Pollinations API key..." value="${esc(cfg.pollinationsKey || '')}" />
           </div>
 
           <label class="card-warm row" style="cursor:pointer;">
             <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} style="width:20px;height:20px;" />
             <div>
-              <strong class="small">Enable Live Photorealistic AI Images (Pollinations.ai)</strong>
-              <div class="xs muted">When online on phones/laptops, generates real AI images for Prompt Clone &amp; Prompt Panic (falls back to built-in Canvas Artist automatically if offline).</div>
+              <strong class="small">Try Free Pollinations.ai Images (Rate-limited to 1 / 45s per Wi-Fi)</strong>
+              <div class="xs muted">Automatically falls back to Built-In Instant Artist if rate-limited. For instant multi-player photorealistic images, use a Gemini, OpenAI, or Pollinations key above.</div>
             </div>
           </label>
 
@@ -5527,6 +5765,7 @@ const App = (() => {
       LiveAI.saveSettings({
         provider: document.getElementById('ai-provider').value,
         apiKey: document.getElementById('ai-key').value.trim(),
+        pollinationsKey: document.getElementById('ai-poll-key').value.trim(),
         liveImages: document.getElementById('ai-live-imgs').checked,
       });
       SoundFX.ding();
@@ -5549,28 +5788,65 @@ const App = (() => {
     let botDraft = '';
     let cachedTargetKey = '';
     let cachedTargetDataUrl = '';
+    const receivedImages = {}; // imgKey -> dataUrl
+    const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
+    const localGenCache = {}; // prompt -> dataUrl
+
+    function getLocalArt(prompt) {
+      const k = prompt || 'turkey';
+      if (!localGenCache[k]) localGenCache[k] = AIArt.renderDataURL(k, 440, 300).dataUrl;
+      return localGenCache[k];
+    }
 
     function getPhoneCloneImageHtml(payload) {
-      if (payload.customImageThumb) {
-        return `<div class="art-frame"><img src="${payload.customImageThumb}" alt="Target Image" /></div>`;
+      const targetImgKey = payload.roundId ? `target_${payload.roundId}` : '';
+      if (targetImgKey && receivedImages[targetImgKey]) {
+        return `<div class="art-frame"><img src="${receivedImages[targetImgKey]}" alt="Target Image" /></div>`;
       }
       const ch = GAME_DATA.promptClone.challenges.find(
         c => (payload.challengeId && c.id === payload.challengeId) || (payload.title && c.title === payload.title)
       );
+      let fallback = '';
       if (ch) {
         if (cachedTargetKey !== ch.id) {
           cachedTargetKey = ch.id;
           cachedTargetDataUrl = AIArt.renderDataURL(ch.secretPrompt, 440, 300).dataUrl;
         }
-        if (payload.liveImageUrl) {
-          return `<div class="art-frame"><img src="${payload.liveImageUrl}" onerror="this.src='${cachedTargetDataUrl}'" alt="Target Image" /></div>`;
-        }
-        return `<div class="art-frame"><img src="${cachedTargetDataUrl}" alt="Target Image" /></div>`;
+        fallback = cachedTargetDataUrl;
       }
-      if (payload.liveImageUrl) {
-        return `<div class="art-frame"><img src="${payload.liveImageUrl}" alt="Target Image" /></div>`;
+      const asset = payload.asset || ch?.asset || null;
+      if (asset) {
+        return `<div class="art-frame"><img src="${asset}" ${fallback ? `onerror="this.src='${fallback}'"` : ''} alt="Target Image" /></div>`;
+      }
+      if (fallback) {
+        return `<div class="art-frame"><img src="${fallback}" alt="Target Image" /></div>`;
       }
       return '';
+    }
+
+    function renderCloneResultCard(r, rankIdx, isMe) {
+      const fallback = getLocalArt(r.prompt);
+      const imgSrc = (r.imgKey && receivedImages[r.imgKey]) || r.imgUrl || fallback;
+      const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+      return `
+        <div class="clone-card ${rankIdx === 0 ? 'winner' : ''}" style="${isMe ? 'border:2px solid var(--pumpkin);' : ''}">
+          <div class="art-frame" style="border:none;border-radius:0;">
+            <img src="${imgSrc}" data-img-key="${esc(r.imgKey || '')}" alt="${esc(r.playerName)}'s AI image" onerror="this.src='${fallback}'" />
+          </div>
+          <div class="clone-card-body">
+            <div class="row-between">
+              <strong>${rankIdx === 0 ? '👑 ' : `#${rankIdx + 1} `}${r.avatar || '🦃'} ${esc(r.playerName)} ${isMe ? '<span class="tag tag-new">YOU</span>' : ''}</strong>
+              <span class="mono" style="font-weight:800;font-size:1.1rem;color:${r.score >= 70 ? 'var(--sage)' : 'var(--pumpkin)'};">${r.score}% Match</span>
+            </div>
+            <div class="meter-track"><div class="meter-fill" style="width:${r.score}%;background:${r.score >= 75 ? 'var(--sage)' : r.score >= 50 ? 'var(--gold)' : 'var(--cranberry)'};"></div></div>
+            <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
+            <div class="chip-wrap">
+              <span class="tag tag-gold">🎨 ${badge}</span>
+              ${(r.breakdown || []).map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
+            </div>
+            <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
+          </div>
+        </div>`;
     }
 
     RoomSync.connect(roomCode);
@@ -5578,6 +5854,28 @@ const App = (() => {
       if (msg.type === 'HOST_STATE') {
         hostState = msg;
         renderPhone();
+      } else if (msg.type === 'CLONE_RESULT_ITEM' && msg.roundId) {
+        if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
+        cloneResultsByRound[msg.roundId].set(msg.playerId, msg);
+        if (hostState.game === 'promptClone' && hostState.phase === 'results') {
+          lastViewKey = ''; // Force gallery refresh as each result arrives
+          renderPhone();
+        }
+      } else if (msg.type === 'IMG_READY' && msg.imgKey && msg.dataUrl) {
+        receivedImages[msg.imgKey] = msg.dataUrl;
+        // Update any live <img> tag waiting for this chunked image without wiping textareas!
+        const liveImg = document.querySelector(`img[data-img-key="${CSS.escape(msg.imgKey)}"]`);
+        if (liveImg) {
+          liveImg.src = msg.dataUrl;
+        } else if (hostState.game === 'promptClone' && (hostState.phase === 'writing' || hostState.phase === 'results')) {
+          if (msg.imgKey.startsWith('target_') && lastViewKey.endsWith(':edit')) {
+            const frame = document.getElementById('phone-target-slot');
+            if (frame) frame.innerHTML = `<div class="art-frame"><img src="${msg.dataUrl}" alt="Target Image" /></div>`;
+          } else if (hostState.phase === 'results') {
+            lastViewKey = '';
+            renderPhone();
+          }
+        }
       }
     });
 
@@ -5637,7 +5935,7 @@ const App = (() => {
           };
           lastViewKey = '';
           SoundFX.ding();
-          RoomSync.send({ type: 'JOIN', ...me });
+          RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
           renderPhone();
         };
         return;
@@ -5670,11 +5968,14 @@ const App = (() => {
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
         viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
+      } else if (game === 'promptClone' && phase === 'results') {
+        const resCount = cloneResultsByRound[payload.roundId]?.size || 0;
+        viewKey = `promptClone:results:${cloneRoundKey}:${resCount}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
         viewKey = `spotTheBot:submit:${botRoundKey}:${botAlready ? 'done' : 'edit'}`;
       }
 
-      if (viewKey === lastViewKey && (viewKey.endsWith(':edit'))) {
+      if (viewKey === lastViewKey && viewKey.endsWith(':edit')) {
         const subEl = document.getElementById('phone-sub-count');
         if (subEl && Array.isArray(payload.submittedIds)) {
           subEl.textContent = `${payload.submittedIds.length} locked in so far`;
@@ -5691,8 +5992,8 @@ const App = (() => {
           <div class="card center stack">
             <div style="font-size:3rem;">🔒✨</div>
             <h2>Prompt Locked In!</h2>
-            <p class="small muted">Waiting for everyone else—get ready to see what the AI paints from your prompt!</p>
-            ${imgHtml}
+            <p class="small muted">Waiting for everyone else—your AI image &amp; results gallery will appear right here automatically!</p>
+            <div id="phone-target-slot">${imgHtml}</div>
           </div>` : `
           <div class="card stack">
             <div class="row-between">
@@ -5700,7 +6001,7 @@ const App = (() => {
               <span class="xs muted" id="phone-sub-count">${(payload.submittedIds || []).length} locked in so far</span>
             </div>
             <h2 style="margin:0;">🔍 Recreate This Image!</h2>
-            ${imgHtml}
+            <div id="phone-target-slot">${imgHtml}</div>
             <p class="xs muted" style="margin:0;">💡 Hint: ${esc(payload.tips || 'Describe subjects, setting, props, colors, and art style!')}</p>
             <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style...">${esc(cloneDraft)}</textarea>
             <div class="chip-wrap">
@@ -5708,6 +6009,43 @@ const App = (() => {
                 `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
             </div>
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
+          </div>`;
+      } else if (game === 'promptClone' && phase === 'grading') {
+        body = `
+          <div class="card center stack" style="padding:36px 18px;">
+            <div style="font-size:3rem;">🤖🎨</div>
+            <h2>AI is Generating Everyone's Images!</h2>
+            <p class="small muted" style="margin:0;">${esc(payload.gradingStatus || 'Painting every prompt and grading resemblance...')}</p>
+          </div>`;
+      } else if (game === 'promptClone' && phase === 'results') {
+        const map = cloneResultsByRound[payload.roundId];
+        const items = map ? Array.from(map.values()).sort((a, b) => a.rank - b.rank) : [];
+        const myItem = items.find(r => r.playerId === me.id);
+        const imgHtml = getPhoneCloneImageHtml(payload);
+        body = `
+          <div class="stack fade-in">
+            <div class="card-warm stack-sm">
+              <div class="row-between">
+                <strong>🎯 Original Target Image</strong>
+                <span class="tag tag-gold">${items.length}/${payload.totalResults || items.length} Results</span>
+              </div>
+              ${imgHtml}
+              ${payload.originalPrompt ? `<p class="xs muted" style="margin:0;">Secret prompt: <strong>"${esc(payload.originalPrompt)}"</strong></p>` : ''}
+            </div>
+
+            ${myItem ? `
+              <div class="stack-sm">
+                <strong class="small">✨ What AI Created From Your Prompt:</strong>
+                ${renderCloneResultCard(myItem, myItem.rank, true)}
+              </div>
+            ` : ''}
+
+            <div class="stack-sm">
+              <strong class="small">🏆 Full Family Results Gallery:</strong>
+              ${items.length
+                ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id)).join('')
+                : `<div class="card center small muted">Loading everyone's AI creations...</div>`}
+            </div>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
         body = botAlready ? `
@@ -5882,7 +6220,7 @@ const App = (() => {
 
     RoomSync.onMessage((msg) => {
       if (msg.type === 'JOIN' && msg.name) {
-        addPlayer({ id: msg.id || msg.playerId, name: msg.name, ageGroup: msg.ageGroup || 'adult', avatar: msg.avatar, remote: true });
+        addPlayer({ id: msg.playerId || msg.id, name: msg.name, ageGroup: msg.ageGroup || 'adult', avatar: msg.avatar, remote: true });
         SoundFX.ding();
         // Send current game state to the newly joined phone
         broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
@@ -5947,7 +6285,7 @@ const App = (() => {
 
   const publicApi = {
     getPlayers, addPlayer, removePlayer, addScore,
-    getStage, broadcastHostState, openQRModal, openGuideModal, openGame,
+    getStage, broadcastHostState, openQRModal, openGuideModal, openSettingsModal, openGame,
   };
 
   if (typeof document !== 'undefined') {

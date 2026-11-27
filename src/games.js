@@ -26,7 +26,7 @@ const Games = (() => {
   // GAME 1: PROMPT CLONE! (Reverse-Engineer the AI Image — 3 Min Challenge)
   // =========================================================================
   function createPromptClone(App) {
-    let idx = Math.floor(Math.random() * GAME_DATA.promptClone.challenges.length);
+    let idx = Math.floor(Math.random() * 6); // Start on one of the 6 real studio AI target artworks!
     let phase = 'lobby'; // lobby | writing | pass_cover | pass_input | grading | results
     let durationSec = 180; // 3 minutes default!
     let timeLeft = 180;
@@ -40,6 +40,7 @@ const Games = (() => {
     let submissions = {}; // playerId -> { text, ts }
     let passIdx = 0;
     let gradedResults = [];
+    let gradingStatus = '';
 
     function cleanup() {
       if (timer) { clearInterval(timer); timer = null; }
@@ -54,38 +55,75 @@ const Games = (() => {
       }
     }
 
-    function makeThumb(dataUrl, cb) {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement('canvas');
-        const maxW = 300;
-        const scale = Math.min(1, maxW / (img.width || maxW));
-        c.width = Math.max(1, Math.round((img.width || 300) * scale));
-        c.height = Math.max(1, Math.round((img.height || 200) * scale));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        cb(c.toDataURL('image/jpeg', 0.58));
-      };
-      img.onerror = () => cb(null);
-      img.src = dataUrl;
+    function makeThumb(dataUrl) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas');
+          const maxW = 320;
+          const scale = Math.min(1, maxW / (img.width || maxW));
+          c.width = Math.max(1, Math.round((img.width || 320) * scale));
+          c.height = Math.max(1, Math.round((img.height || 220) * scale));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          resolve(c.toDataURL('image/jpeg', 0.62));
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+      });
+    }
+
+    function getTargetImageHtml() {
+      if (customTargetImg) {
+        return `<img src="${customTargetImg}" alt="Target AI Image" />`;
+      }
+      if (target.asset) {
+        return `<img src="${target.asset}" alt="Target AI Image" onerror="this.src='${targetArt.dataUrl}'" />`;
+      }
+      return `<img src="${targetArt.dataUrl}" alt="Target AI Image" />`;
     }
 
     function broadcastPhoneState() {
-      const liveCfg = LiveAI.loadSettings();
-      const targetUrl = !customTargetImg && liveCfg.liveImages
-        ? LiveAI.getLiveImageUrl(target.secretPrompt, idx + 101)
-        : null;
       App.broadcastHostState('promptClone', phase, {
         roundId,
         challengeId: customTargetImg ? null : target.id,
+        asset: customTargetImg ? null : (target.asset || null),
+        hasCustomTarget: !!customTargetImg,
         title: customTargetImg ? 'Custom Target Image' : target.title,
         tips: customTargetImg ? 'Study every object, color, setting, and style in this image!' : target.tips,
         difficulty: customTargetImg ? 'Custom' : target.difficulty,
-        targetPromptSeed: idx + 101,
-        liveImageUrl: targetUrl,
-        customImageThumb: customTargetImg ? customTargetThumb : null,
         timeLeft,
         submittedIds: Object.keys(submissions),
+        gradingStatus,
+        originalPrompt: phase === 'results' ? (customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt) : null,
+        totalResults: phase === 'results' ? gradedResults.length : 0,
       });
+    }
+
+    async function broadcastResultsToPhones() {
+      for (let i = 0; i < gradedResults.length; i++) {
+        const r = gradedResults[i];
+        const imgKey = r.aiDataUrl ? `res_${roundId}_${r.player.id}` : null;
+        await RoomSync.send({
+          type: 'CLONE_RESULT_ITEM',
+          roundId,
+          rank: i,
+          playerId: r.player.id,
+          playerName: r.player.name,
+          avatar: r.player.avatar,
+          prompt: r.prompt,
+          score: r.score,
+          pointsAwarded: r.pointsAwarded,
+          comment: r.comment,
+          breakdown: r.breakdown,
+          imgSource: r.imgSource,
+          imgUrl: r.aiUrl || null,
+          imgKey,
+        });
+        if (imgKey && r.aiDataUrl) {
+          const thumb = await makeThumb(r.aiDataUrl);
+          if (thumb) await RoomSync.sendImage(imgKey, thumb);
+        }
+      }
     }
 
     function onPhoneAction(msg) {
@@ -102,11 +140,15 @@ const Games = (() => {
       buildTarget();
       roundId = Date.now();
       submissions = {};
+      gradedResults = [];
       timeLeft = durationSec;
       phase = 'writing';
       SoundFX.ding();
       SoundFX.speak(`Prompt Clone! Study the image carefully. You have ${Math.round(durationSec / 60)} minutes to write an AI prompt that recreates it as closely as possible!`);
       broadcastPhoneState();
+      if (customTargetImg && customTargetThumb) {
+        RoomSync.sendImage(`target_${roundId}`, customTargetThumb);
+      }
       if (timer) clearInterval(timer);
       timer = setInterval(() => {
         timeLeft--;
@@ -128,21 +170,32 @@ const Games = (() => {
     async function gradeAll() {
       if (timer) { clearInterval(timer); timer = null; }
       phase = 'grading';
+      gradingStatus = 'Preparing AI art generation & resemblance grading...';
       broadcastPhoneState();
       render();
 
       const liveCfg = LiveAI.loadSettings();
       const refPrompt = customTargetImg ? (customTargetDesc || target.secretPrompt) : target.secretPrompt;
       const players = App.getPlayers();
+      const submittingPlayers = players.filter(p => submissions[p.id] && submissions[p.id].text);
       const results = [];
 
-      for (const p of players) {
+      for (let i = 0; i < submittingPlayers.length; i++) {
+        const p = submittingPlayers[i];
         const sub = submissions[p.id];
-        if (!sub || !sub.text) continue;
-        const gen = AIArt.renderDataURL(sub.text, 440, 300);
-        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
+        gradingStatus = `🎨 Generating AI image for ${p.name} (${i + 1}/${submittingPlayers.length})...`;
+        broadcastPhoneState();
+        const stEl = document.getElementById('clone-grading-status');
+        if (stEl) stEl.textContent = gradingStatus;
 
-        // Optional Live LLM review upgrade if user configured Gemini/OpenAI key
+        // 1. Always create instant built-in artwork as pixel baseline & fallback
+        const gen = AIArt.renderDataURL(sub.text, 440, 300);
+
+        // 2. Generate real AI image via OpenAI / Gemini / Pollinations if configured
+        const aiImg = await LiveAI.generateImage(sub.text, idx * 31 + p.name.length + i);
+
+        // 3. Grade resemblance (built-in feature + visual comparison, upgraded with LLM if configured)
+        let grade = AIArt.gradeCloneSubmission(refPrompt, sub.text, targetArt?.canvas, gen.canvas);
         if (liveCfg.apiKey && liveCfg.provider !== 'builtin') {
           const llm = await LiveAI.askJSON(
             'You are a witty AI art judge for a family Thanksgiving Prompt Clone game. Compare the target image description to the player\'s prompt and grade resemblance 0-100.',
@@ -154,12 +207,13 @@ const Games = (() => {
           }
         }
 
-        const liveUrl = liveCfg.liveImages ? LiveAI.getLiveImageUrl(sub.text, idx * 31 + p.name.length) : null;
         results.push({
           player: p,
           prompt: sub.text,
           dataUrl: gen.dataUrl,
-          liveUrl,
+          aiUrl: aiImg.url,
+          aiDataUrl: aiImg.dataUrl,
+          imgSource: aiImg.source,
           ...grade,
         });
       }
@@ -176,23 +230,23 @@ const Games = (() => {
       });
 
       phase = 'results';
+      gradingStatus = '';
       SoundFX.fanfare();
       if (results.length > 0) {
         SoundFX.speak(`Grading complete! ${results[0].player.name} wins with a ${results[0].score} percent match!`);
       }
       broadcastPhoneState();
       render();
+      // Stream every participant's result card + AI image to all connected phones!
+      broadcastResultsToPhones();
     }
 
     function render() {
       const root = App.getStage();
       const players = App.getPlayers();
-      const liveCfg = LiveAI.loadSettings();
       if (!targetArt) buildTarget();
-
-      const targetImgHtml = !customTargetImg && liveCfg.liveImages
-        ? `<img src="${LiveAI.getLiveImageUrl(target.secretPrompt, idx + 101)}" alt="Target AI Image" onerror="this.src='${targetArt.dataUrl}'" />`
-        : `<img src="${targetArt.dataUrl}" alt="Target AI Image" />`;
+      const targetImgHtml = getTargetImageHtml();
+      const aiImgLabel = LiveAI.getActiveImageLabel();
 
       if (phase === 'lobby') {
         root.innerHTML = `
@@ -201,15 +255,15 @@ const Games = (() => {
               <div>
                 <div class="row"><span class="tag tag-new">NEW · REVERSE PROMPT</span><span class="tag">${esc(target.difficulty)}</span></div>
                 <h2 style="margin-top:6px;">🔍 Prompt Clone!</h2>
-                <p class="muted small" style="margin:0;">Study the AI image, write a prompt to recreate it as closely as possible, then watch the AI regenerate everyone's image and grade resemblance!</p>
+                <p class="muted small" style="margin:0;">Every player sees the target image right on their phone, writes a prompt to recreate it, then everyone gets the AI-generated results gallery on their own screen!</p>
               </div>
               <button class="btn btn-sm" id="clone-next-scene">🎲 New Image</button>
             </div>
 
             <div class="card stack">
               <div class="row-between">
-                <h3>Target Image Preview: ${esc(target.title)}</h3>
-                <span class="xs muted">Secret prompt hidden until reveal</span>
+                <h3>Target Image: ${esc(target.title)}</h3>
+                <span class="tag ${LiveAI.hasRealImageAI() ? 'tag-kid' : 'tag-gold'}">🤖 ${esc(aiImgLabel)}</span>
               </div>
               <div class="art-frame">${targetImgHtml}</div>
               <div class="row-between">
@@ -221,6 +275,12 @@ const Games = (() => {
                 </div>
                 <button class="btn btn-primary btn-lg" id="clone-start">🚀 Start Challenge!</button>
               </div>
+              ${!LiveAI.hasRealImageAI() ? `
+                <div class="card-warm row-between" style="padding:10px 12px;">
+                  <span class="xs muted">✨ Want <strong>photorealistic AI images</strong> generated for every participant's prompt? Connect a free Gemini, OpenAI, or Pollinations key!</span>
+                  <button class="btn btn-sm" id="clone-open-ai">⚙️ Connect AI</button>
+                </div>
+              ` : ''}
             </div>
 
             <div class="card-warm stack-sm">
@@ -231,6 +291,9 @@ const Games = (() => {
               <input class="input" id="clone-custom-desc" placeholder="(Optional) Describe key elements in your uploaded image for AI grading..." value="${esc(customTargetDesc)}" />
             </div>
           </div>`;
+
+        const aiBtn = document.getElementById('clone-open-ai');
+        if (aiBtn) aiBtn.onclick = () => App.openSettingsModal && App.openSettingsModal();
 
         document.getElementById('clone-next-scene').onclick = () => {
           customTargetImg = null;
@@ -248,10 +311,10 @@ const Games = (() => {
           const f = e.target.files?.[0];
           if (!f) return;
           const reader = new FileReader();
-          reader.onload = () => {
+          reader.onload = async () => {
             customTargetImg = reader.result;
             buildTarget();
-            makeThumb(customTargetImg, (thumb) => { customTargetThumb = thumb; });
+            customTargetThumb = await makeThumb(customTargetImg);
             render();
           };
           reader.readAsDataURL(f);
@@ -377,8 +440,8 @@ const Games = (() => {
         root.innerHTML = `
           <div class="card center stack" style="padding:48px 20px;">
             <div style="font-size:3.2rem;">🤖🎨</div>
-            <h2>AI is Regenerating Everyone's Images & Grading...</h2>
-            <p class="muted">Comparing subjects, composition, palette, props, and art style!</p>
+            <h2>AI is Regenerating Everyone's Images &amp; Grading...</h2>
+            <p class="muted" id="clone-grading-status">${esc(gradingStatus || 'Comparing subjects, composition, palette, props, and art style!')}</p>
           </div>`;
         return;
       }
@@ -391,22 +454,28 @@ const Games = (() => {
                 <h2>🏆 Prompt Clone Results!</h2>
                 <p class="muted small" style="margin:0;">Original secret prompt: <strong>"${esc(customTargetImg ? (customTargetDesc || 'Custom Image') : target.secretPrompt)}"</strong></p>
               </div>
-              <button class="btn btn-primary" id="clone-play-again">Next Round →</button>
+              <div class="row">
+                <button class="btn btn-sm" id="clone-resend">📱 Resend to Phones</button>
+                <button class="btn btn-primary" id="clone-play-again">Next Round →</button>
+              </div>
             </div>
 
             <div class="card-warm stack-sm">
               <div class="row-between">
                 <strong>🎯 Original Target Image</strong>
-                <span class="tag tag-gold">Compare side-by-side below!</span>
+                <span class="tag tag-gold">Sent to every participant's phone!</span>
               </div>
               <div class="art-frame" style="max-width:420px;">${targetImgHtml}</div>
             </div>
 
             <div class="clone-gallery">
-              ${gradedResults.map((r, i) => `
+              ${gradedResults.map((r, i) => {
+                const imgSrc = r.aiDataUrl || r.aiUrl || r.dataUrl;
+                const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+                return `
                 <div class="clone-card ${i === 0 ? 'winner' : ''}">
                   <div class="art-frame" style="border:none;border-radius:0;">
-                    <img src="${r.liveUrl || r.dataUrl}" alt="${esc(r.player.name)}'s AI image" onerror="this.src='${r.dataUrl}'" />
+                    <img src="${imgSrc}" alt="${esc(r.player.name)}'s AI image" onerror="this.src='${r.dataUrl}'" />
                   </div>
                   <div class="clone-card-body">
                     <div class="row-between">
@@ -416,17 +485,25 @@ const Games = (() => {
                     <div class="meter-track"><div class="meter-fill" style="width:${r.score}%;background:${r.score >= 75 ? 'var(--sage)' : r.score >= 50 ? 'var(--gold)' : 'var(--cranberry)'};"></div></div>
                     <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
                     <div class="chip-wrap">
+                      <span class="tag tag-gold">🎨 ${badge}</span>
                       ${r.breakdown.map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
                     </div>
                     <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
                   </div>
-                </div>
-              `).join('')}
+                </div>`;
+              }).join('')}
             </div>
           </div>`;
 
+        document.getElementById('clone-resend').onclick = () => {
+          SoundFX.pop();
+          broadcastPhoneState();
+          broadcastResultsToPhones();
+          document.getElementById('clone-resend').textContent = '✅ Sent to Phones!';
+        };
         document.getElementById('clone-play-again').onclick = () => {
           customTargetImg = null;
+          customTargetThumb = null;
           idx = (idx + 1) % GAME_DATA.promptClone.challenges.length;
           target = GAME_DATA.promptClone.challenges[idx];
           buildTarget();
@@ -1519,6 +1596,7 @@ const Games = (() => {
       }
     }
 
+    broadcast();
     return { render, cleanup, onPhoneAction };
   }
 

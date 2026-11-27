@@ -23,7 +23,8 @@ Six fast, multi-generational interactive AI games for **2 to 12+ players** (ages
 ## ⚙️ 3-Step Setup (Zero App Downloads)
 1. **Pick 1 Host Screen:** Open `https://tprzemek.github.io/thanksgiving-games/` on a phone, iPad, laptop, or TV everyone can see, and turn up the volume for the AI Voice Host & sound effects.
 2. **Set Your Players:** Remove any demo names by tapping `×`, type names directly, **or** let guests scan the QR code to auto-join.
-3. **Optional Live AI Boost (`⚙️` icon):** Everything works **100% free out of the box** with no API key. Tap `⚙️` in the top-right to optionally enable **Live Photorealistic AI Images (Pollinations.ai)** or connect a **Gemini / OpenAI API key**.
+3. **Real AI Image Generation (`⚙️` icon):** Prompt Clone ships with 6 studio-grade AI target images and works 100% out of the box. To generate **photorealistic AI images for every player's prompt**, tap `⚙️` and add a **Google Gemini**, **OpenAI (DALL-E 3)**, or **Pollinations.ai** API key (stored only in your browser).
+4. **Host Admin Passcode:** Score resets are protected by a Host PIN (default `2026`, changeable in `⚙️` Settings) so kids can't accidentally wipe the leaderboard.
 
 ---
 

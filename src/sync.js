@@ -1,5 +1,6 @@
 // 3-Tier Multi-Device QR Room Sync (LAN Server -> Cloud Relay -> Local BroadcastChannel)
-// + Optional Live AI Engine (Gemini / OpenAI + Live Image Generation)
+// + Chunked Image Sync (stays safely under ntfy.sh 4KB message limit)
+// + Real AI Image Generation & Vision/LLM Bridge (Gemini / OpenAI / Pollinations / Built-In)
 
 const RoomSync = (() => {
   const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -16,16 +17,38 @@ const RoomSync = (() => {
   let bc = null;
   let listeners = [];
   let seenIds = new Set();
+  const chunkBuffers = new Map(); // imgKey -> { total, parts: [] }
   const clientId = 'c_' + Math.random().toString(36).slice(2, 9);
 
   function emit(msg) {
     if (!msg || !msg.id) return;
     if (seenIds.has(msg.id)) return;
     seenIds.add(msg.id);
-    if (seenIds.size > 400) {
+    if (seenIds.size > 600) {
       const first = seenIds.values().next().value;
       seenIds.delete(first);
     }
+
+    // Automatically reassemble chunked images into IMG_READY events
+    if (msg.type === 'IMG_CHUNK' && msg.imgKey && typeof msg.idx === 'number' && msg.total) {
+      let buf = chunkBuffers.get(msg.imgKey);
+      if (!buf || buf.total !== msg.total) {
+        buf = { total: msg.total, parts: new Array(msg.total).fill(null), got: 0 };
+        chunkBuffers.set(msg.imgKey, buf);
+      }
+      if (buf.parts[msg.idx] === null) {
+        buf.parts[msg.idx] = msg.data;
+        buf.got++;
+      }
+      if (buf.got === buf.total) {
+        const dataUrl = buf.parts.join('');
+        chunkBuffers.delete(msg.imgKey);
+        const readyMsg = { id: 'img_' + msg.imgKey + '_' + Date.now(), type: 'IMG_READY', imgKey: msg.imgKey, dataUrl };
+        listeners.forEach(fn => { try { fn(readyMsg); } catch (e) { console.error(e); } });
+      }
+      return;
+    }
+
     listeners.forEach(fn => {
       try { fn(msg); } catch (e) { console.error(e); }
     });
@@ -47,12 +70,6 @@ const RoomSync = (() => {
         }
       } catch (_) {}
 
-      // If hosted on a public HTTPS/HTTP origin (e.g., GitHub Pages), use ntfy.sh SSE relay
-      if (proto === 'https:' && !window.location.hostname.includes('localhost')) {
-        mode = 'cloud';
-        return mode;
-      }
-      // Allow cloud relay on http non-file hosts if reachable
       if (proto === 'https:' || proto === 'http:') {
         mode = 'cloud';
         return mode;
@@ -70,7 +87,6 @@ const RoomSync = (() => {
     disconnect();
     roomCode = (code || genCode(4)).toUpperCase();
 
-    // Always attach BroadcastChannel for instant same-browser multi-tab sync
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         bc = new BroadcastChannel('tg_room_' + roomCode);
@@ -97,9 +113,7 @@ const RoomSync = (() => {
             }
           } catch (_) {}
         };
-        es.onerror = () => {
-          // Silently keep local BroadcastChannel working if blocked by CSP/offline
-        };
+        es.onerror = () => {};
       } catch (_) {}
     }
 
@@ -144,6 +158,25 @@ const RoomSync = (() => {
     return msg;
   }
 
+  // Safely send a compressed JPEG dataUrl across 4KB-limited relays by chunking
+  async function sendImage(imgKey, dataUrl) {
+    if (!imgKey || !dataUrl) return;
+    const CHUNK_SIZE = 2200;
+    const total = Math.ceil(dataUrl.length / CHUNK_SIZE);
+    for (let i = 0; i < total; i++) {
+      await send({
+        type: 'IMG_CHUNK',
+        imgKey,
+        idx: i,
+        total,
+        data: dataUrl.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+      });
+      if (mode === 'cloud' && total > 3) {
+        await new Promise(r => setTimeout(r, 60));
+      }
+    }
+  }
+
   function onMessage(fn) {
     listeners.push(fn);
     return () => { listeners = listeners.filter(x => x !== fn); };
@@ -172,6 +205,7 @@ const RoomSync = (() => {
     connect,
     disconnect,
     send,
+    sendImage,
     onMessage,
     getJoinUrl,
     getMode: () => mode,
@@ -181,24 +215,52 @@ const RoomSync = (() => {
   };
 })();
 
-// Optional Live AI Client (Works 100% offline without keys; upgrades seamlessly if user adds a key)
+// Optional Real AI Engine (Gemini / OpenAI / Pollinations + Built-In Instant Fallback)
 const LiveAI = (() => {
   const STORAGE_KEY = 'tg26_ai_settings';
 
   function loadSettings() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          provider: parsed.provider || 'builtin',
+          apiKey: parsed.apiKey || '',
+          pollinationsKey: parsed.pollinationsKey || '',
+          liveImages: parsed.liveImages !== undefined ? !!parsed.liveImages : false,
+        };
+      }
     } catch (_) {}
     return {
       provider: 'builtin', // 'builtin' | 'gemini' | 'openai'
       apiKey: '',
-      liveImages: false,   // Use Pollinations.ai free live AI images when online
+      pollinationsKey: '',
+      liveImages: false,
     };
   }
 
   function saveSettings(s) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch (_) {}
+  }
+
+  function hasRealImageAI() {
+    const cfg = loadSettings();
+    return !!(
+      (cfg.provider === 'openai' && cfg.apiKey) ||
+      (cfg.provider === 'gemini' && cfg.apiKey) ||
+      cfg.pollinationsKey ||
+      cfg.liveImages
+    );
+  }
+
+  function getActiveImageLabel() {
+    const cfg = loadSettings();
+    if (cfg.provider === 'openai' && cfg.apiKey) return 'OpenAI DALL-E 3';
+    if (cfg.provider === 'gemini' && cfg.apiKey) return 'Google Gemini AI Art';
+    if (cfg.pollinationsKey) return 'Pollinations AI (Key)';
+    if (cfg.liveImages) return 'Pollinations AI (Free)';
+    return 'Built-In Instant AI Artist';
   }
 
   async function askJSON(systemPrompt, userPrompt) {
@@ -251,11 +313,97 @@ const LiveAI = (() => {
   }
 
   function getLiveImageUrl(prompt, seed = 42) {
-    const clean = encodeURIComponent(`${prompt}, vibrant storybook illustration, clear composition`);
-    return `https://image.pollinations.ai/prompt/${clean}?width=512&height=360&seed=${seed}&nologo=true`;
+    const cfg = loadSettings();
+    const clean = encodeURIComponent(`${prompt}, vibrant illustration, clear composition`);
+    const keyParam = cfg.pollinationsKey ? `&key=${encodeURIComponent(cfg.pollinationsKey)}` : '';
+    return `https://image.pollinations.ai/prompt/${clean}?width=512&height=360&seed=${seed}&nologo=true${keyParam}`;
   }
 
-  return { loadSettings, saveSettings, askJSON, getLiveImageUrl };
+  // Generate a real AI image using the configured provider, with safe error handling & built-in fallback
+  async function generateImage(prompt, seed = 42) {
+    const cfg = loadSettings();
+    const fullPrompt = `${prompt}. Vibrant, clear, expressive illustration, no text.`;
+
+    // 1. OpenAI DALL-E 3
+    if (cfg.provider === 'openai' && cfg.apiKey) {
+      try {
+        const res = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${cfg.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'dall-e-3',
+            prompt: fullPrompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'standard',
+          }),
+        });
+        if (res.ok) {
+          const j = await res.json();
+          const url = j?.data?.[0]?.url;
+          const b64 = j?.data?.[0]?.b64_json;
+          if (url) return { url, dataUrl: null, source: 'openai' };
+          if (b64) return { url: null, dataUrl: `data:image/png;base64,${b64}`, source: 'openai' };
+        }
+      } catch (_) {}
+    }
+
+    // 2. Google Gemini Image Generation
+    if (cfg.provider === 'gemini' && cfg.apiKey) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key=${encodeURIComponent(cfg.apiKey)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: `Generate an image of: ${fullPrompt}` }] }],
+              generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+            }),
+          }
+        );
+        if (res.ok) {
+          const j = await res.json();
+          const parts = j?.candidates?.[0]?.content?.parts || [];
+          const imgPart = parts.find(p => p.inlineData && p.inlineData.data);
+          if (imgPart) {
+            const mime = imgPart.inlineData.mimeType || 'image/png';
+            return { url: null, dataUrl: `data:${mime};base64,${imgPart.inlineData.data}`, source: 'gemini' };
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3. Pollinations.ai (verified HTTP 200 image/* so 402 rate limits never render broken images!)
+    if (cfg.pollinationsKey || cfg.liveImages) {
+      try {
+        const url = getLiveImageUrl(prompt, seed);
+        const res = await fetch(url);
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.startsWith('image/')) {
+          const blob = await res.blob();
+          const dataUrl = await new Promise((resolve) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result);
+            fr.onerror = () => resolve(null);
+            fr.readAsDataURL(blob);
+          });
+          return { url, dataUrl, source: 'pollinations' };
+        }
+      } catch (_) {}
+    }
+
+    // 4. Always-works instant built-in AI Artist fallback
+    return { url: null, dataUrl: null, source: 'builtin' };
+  }
+
+  return {
+    loadSettings, saveSettings, hasRealImageAI, getActiveImageLabel,
+    askJSON, getLiveImageUrl, generateImage,
+  };
 })();
 
 if (typeof module !== 'undefined') module.exports = { RoomSync, LiveAI };

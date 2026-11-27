@@ -98,6 +98,20 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Serve static AI target images in /assets/
+  const assetMatch = p.match(/^\/assets\/([a-zA-Z0-9._-]+\.(?:jpg|jpeg|png|webp))$/);
+  if (assetMatch) {
+    const fpath = path.join(__dirname, 'assets', assetMatch[1]);
+    fs.readFile(fpath, (err, buf) => {
+      if (err) { res.writeHead(404); res.end('Not found'); return; }
+      const ext = path.extname(fpath).toLowerCase();
+      const ct = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=3600' });
+      res.end(buf);
+    });
+    return;
+  }
+
   // Serve single-file app
   if (p === '/' || p === '/index.html') {
     fs.readFile(INDEX_PATH, (err, html) => {

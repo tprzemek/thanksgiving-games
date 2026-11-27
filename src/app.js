@@ -55,8 +55,9 @@ const App = (() => {
   function addPlayer({ id, name, ageGroup = 'adult', avatar, remote = false }) {
     const clean = String(name || '').trim();
     if (!clean) return null;
-    const existing = id ? players.find(p => p.id === id) : players.find(p => p.name.toLowerCase() === clean.toLowerCase());
+    const existing = (id && players.find(p => p.id === id)) || players.find(p => p.name.toLowerCase() === clean.toLowerCase());
     if (existing) {
+      if (id && remote) existing.id = id;
       existing.name = clean;
       existing.ageGroup = ageGroup;
       if (avatar) existing.avatar = avatar;
@@ -860,27 +861,32 @@ const App = (() => {
             <h2>⚙️ Host &amp; AI Settings</h2>
             <button class="btn btn-sm" id="modal-close">✕</button>
           </div>
-          <p class="small muted" style="margin:0;">All 6 games work <strong>100% out of the box</strong> with our Built-In Instant AI. Optionally connect a live AI key or live image generator below:</p>
+          <p class="small muted" style="margin:0;">All 6 games work out of the box with our Built-In Instant AI. To generate <strong>photorealistic AI images</strong> for every player's prompt in Prompt Clone, connect a Gemini, OpenAI, or Pollinations key:</p>
 
           <div class="stack-sm">
-            <label class="small"><strong>AI Judge &amp; Bot Provider</strong></label>
+            <label class="small"><strong>AI Judge &amp; Real Image Provider</strong></label>
             <select class="select" id="ai-provider">
               <option value="builtin" ${cfg.provider === 'builtin' ? 'selected' : ''}>⚡ Built-In Instant AI (No Key Needed · Works Offline)</option>
-              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (gemini-2.0-flash)</option>
-              <option value="openai" ${cfg.provider === 'openai' ? 'selected' : ''}>🤖 OpenAI (gpt-4o-mini)</option>
+              <option value="gemini" ${cfg.provider === 'gemini' ? 'selected' : ''}>✨ Google Gemini (Real AI Images + Smart Judge)</option>
+              <option value="openai" ${cfg.provider === 'openai' ? 'selected' : ''}>🤖 OpenAI (DALL-E 3 Images + GPT-4o-mini Judge)</option>
             </select>
           </div>
 
           <div class="stack-sm">
-            <label class="small"><strong>API Key (stored only in your browser)</strong></label>
-            <input type="password" class="input" id="ai-key" placeholder="Optional API key..." value="${esc(cfg.apiKey)}" />
+            <label class="small"><strong>Gemini or OpenAI API Key (stored only in your browser)</strong></label>
+            <input type="password" class="input" id="ai-key" placeholder="Paste Gemini or OpenAI API key..." value="${esc(cfg.apiKey)}" />
+          </div>
+
+          <div class="stack-sm">
+            <label class="small"><strong>Optional Pollinations.ai Key (unlimited free-tier images)</strong></label>
+            <input type="password" class="input" id="ai-poll-key" placeholder="Optional Pollinations API key..." value="${esc(cfg.pollinationsKey || '')}" />
           </div>
 
           <label class="card-warm row" style="cursor:pointer;">
             <input type="checkbox" id="ai-live-imgs" ${cfg.liveImages ? 'checked' : ''} style="width:20px;height:20px;" />
             <div>
-              <strong class="small">Enable Live Photorealistic AI Images (Pollinations.ai)</strong>
-              <div class="xs muted">When online on phones/laptops, generates real AI images for Prompt Clone &amp; Prompt Panic (falls back to built-in Canvas Artist automatically if offline).</div>
+              <strong class="small">Try Free Pollinations.ai Images (Rate-limited to 1 / 45s per Wi-Fi)</strong>
+              <div class="xs muted">Automatically falls back to Built-In Instant Artist if rate-limited. For instant multi-player photorealistic images, use a Gemini, OpenAI, or Pollinations key above.</div>
             </div>
           </label>
 
@@ -916,6 +922,7 @@ const App = (() => {
       LiveAI.saveSettings({
         provider: document.getElementById('ai-provider').value,
         apiKey: document.getElementById('ai-key').value.trim(),
+        pollinationsKey: document.getElementById('ai-poll-key').value.trim(),
         liveImages: document.getElementById('ai-live-imgs').checked,
       });
       SoundFX.ding();
@@ -938,28 +945,65 @@ const App = (() => {
     let botDraft = '';
     let cachedTargetKey = '';
     let cachedTargetDataUrl = '';
+    const receivedImages = {}; // imgKey -> dataUrl
+    const cloneResultsByRound = {}; // roundId -> Map<playerId, resultItem>
+    const localGenCache = {}; // prompt -> dataUrl
+
+    function getLocalArt(prompt) {
+      const k = prompt || 'turkey';
+      if (!localGenCache[k]) localGenCache[k] = AIArt.renderDataURL(k, 440, 300).dataUrl;
+      return localGenCache[k];
+    }
 
     function getPhoneCloneImageHtml(payload) {
-      if (payload.customImageThumb) {
-        return `<div class="art-frame"><img src="${payload.customImageThumb}" alt="Target Image" /></div>`;
+      const targetImgKey = payload.roundId ? `target_${payload.roundId}` : '';
+      if (targetImgKey && receivedImages[targetImgKey]) {
+        return `<div class="art-frame"><img src="${receivedImages[targetImgKey]}" alt="Target Image" /></div>`;
       }
       const ch = GAME_DATA.promptClone.challenges.find(
         c => (payload.challengeId && c.id === payload.challengeId) || (payload.title && c.title === payload.title)
       );
+      let fallback = '';
       if (ch) {
         if (cachedTargetKey !== ch.id) {
           cachedTargetKey = ch.id;
           cachedTargetDataUrl = AIArt.renderDataURL(ch.secretPrompt, 440, 300).dataUrl;
         }
-        if (payload.liveImageUrl) {
-          return `<div class="art-frame"><img src="${payload.liveImageUrl}" onerror="this.src='${cachedTargetDataUrl}'" alt="Target Image" /></div>`;
-        }
-        return `<div class="art-frame"><img src="${cachedTargetDataUrl}" alt="Target Image" /></div>`;
+        fallback = cachedTargetDataUrl;
       }
-      if (payload.liveImageUrl) {
-        return `<div class="art-frame"><img src="${payload.liveImageUrl}" alt="Target Image" /></div>`;
+      const asset = payload.asset || ch?.asset || null;
+      if (asset) {
+        return `<div class="art-frame"><img src="${asset}" ${fallback ? `onerror="this.src='${fallback}'"` : ''} alt="Target Image" /></div>`;
+      }
+      if (fallback) {
+        return `<div class="art-frame"><img src="${fallback}" alt="Target Image" /></div>`;
       }
       return '';
+    }
+
+    function renderCloneResultCard(r, rankIdx, isMe) {
+      const fallback = getLocalArt(r.prompt);
+      const imgSrc = (r.imgKey && receivedImages[r.imgKey]) || r.imgUrl || fallback;
+      const badge = r.imgSource === 'openai' ? 'DALL-E 3' : r.imgSource === 'gemini' ? 'Gemini AI' : r.imgSource === 'pollinations' ? 'Pollinations AI' : 'Instant AI';
+      return `
+        <div class="clone-card ${rankIdx === 0 ? 'winner' : ''}" style="${isMe ? 'border:2px solid var(--pumpkin);' : ''}">
+          <div class="art-frame" style="border:none;border-radius:0;">
+            <img src="${imgSrc}" data-img-key="${esc(r.imgKey || '')}" alt="${esc(r.playerName)}'s AI image" onerror="this.src='${fallback}'" />
+          </div>
+          <div class="clone-card-body">
+            <div class="row-between">
+              <strong>${rankIdx === 0 ? '👑 ' : `#${rankIdx + 1} `}${r.avatar || '🦃'} ${esc(r.playerName)} ${isMe ? '<span class="tag tag-new">YOU</span>' : ''}</strong>
+              <span class="mono" style="font-weight:800;font-size:1.1rem;color:${r.score >= 70 ? 'var(--sage)' : 'var(--pumpkin)'};">${r.score}% Match</span>
+            </div>
+            <div class="meter-track"><div class="meter-fill" style="width:${r.score}%;background:${r.score >= 75 ? 'var(--sage)' : r.score >= 50 ? 'var(--gold)' : 'var(--cranberry)'};"></div></div>
+            <p class="small" style="margin:0;background:var(--surface-alt);padding:8px 10px;border-radius:8px;"><em>"${esc(r.prompt)}"</em></p>
+            <div class="chip-wrap">
+              <span class="tag tag-gold">🎨 ${badge}</span>
+              ${(r.breakdown || []).map(b => `<span class="tag" style="background:${b.hit ? 'var(--sage-soft)' : b.partial ? 'var(--gold-soft)' : '#F9E5E5'};color:${b.hit ? 'var(--sage)' : b.partial ? '#7C5006' : 'var(--cranberry)'};">${b.hit ? '✓' : b.partial ? '~' : '✗'} ${esc(b.label)}</span>`).join('')}
+            </div>
+            <p class="xs muted" style="margin:0;">🤖 <strong>AI Critic:</strong> ${esc(r.comment)} <strong style="color:var(--pumpkin);">+${r.pointsAwarded} pts</strong></p>
+          </div>
+        </div>`;
     }
 
     RoomSync.connect(roomCode);
@@ -967,6 +1011,28 @@ const App = (() => {
       if (msg.type === 'HOST_STATE') {
         hostState = msg;
         renderPhone();
+      } else if (msg.type === 'CLONE_RESULT_ITEM' && msg.roundId) {
+        if (!cloneResultsByRound[msg.roundId]) cloneResultsByRound[msg.roundId] = new Map();
+        cloneResultsByRound[msg.roundId].set(msg.playerId, msg);
+        if (hostState.game === 'promptClone' && hostState.phase === 'results') {
+          lastViewKey = ''; // Force gallery refresh as each result arrives
+          renderPhone();
+        }
+      } else if (msg.type === 'IMG_READY' && msg.imgKey && msg.dataUrl) {
+        receivedImages[msg.imgKey] = msg.dataUrl;
+        // Update any live <img> tag waiting for this chunked image without wiping textareas!
+        const liveImg = document.querySelector(`img[data-img-key="${CSS.escape(msg.imgKey)}"]`);
+        if (liveImg) {
+          liveImg.src = msg.dataUrl;
+        } else if (hostState.game === 'promptClone' && (hostState.phase === 'writing' || hostState.phase === 'results')) {
+          if (msg.imgKey.startsWith('target_') && lastViewKey.endsWith(':edit')) {
+            const frame = document.getElementById('phone-target-slot');
+            if (frame) frame.innerHTML = `<div class="art-frame"><img src="${msg.dataUrl}" alt="Target Image" /></div>`;
+          } else if (hostState.phase === 'results') {
+            lastViewKey = '';
+            renderPhone();
+          }
+        }
       }
     });
 
@@ -1026,7 +1092,7 @@ const App = (() => {
           };
           lastViewKey = '';
           SoundFX.ding();
-          RoomSync.send({ type: 'JOIN', ...me });
+          RoomSync.send({ type: 'JOIN', playerId: me.id, name: me.name, ageGroup: me.ageGroup, avatar: me.avatar });
           renderPhone();
         };
         return;
@@ -1059,11 +1125,14 @@ const App = (() => {
       let viewKey = `${game || 'hub'}:${phase || 'hub'}`;
       if (game === 'promptClone' && phase === 'writing') {
         viewKey = `promptClone:writing:${cloneRoundKey}:${cloneAlready ? 'done' : 'edit'}`;
+      } else if (game === 'promptClone' && phase === 'results') {
+        const resCount = cloneResultsByRound[payload.roundId]?.size || 0;
+        viewKey = `promptClone:results:${cloneRoundKey}:${resCount}`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
         viewKey = `spotTheBot:submit:${botRoundKey}:${botAlready ? 'done' : 'edit'}`;
       }
 
-      if (viewKey === lastViewKey && (viewKey.endsWith(':edit'))) {
+      if (viewKey === lastViewKey && viewKey.endsWith(':edit')) {
         const subEl = document.getElementById('phone-sub-count');
         if (subEl && Array.isArray(payload.submittedIds)) {
           subEl.textContent = `${payload.submittedIds.length} locked in so far`;
@@ -1080,8 +1149,8 @@ const App = (() => {
           <div class="card center stack">
             <div style="font-size:3rem;">🔒✨</div>
             <h2>Prompt Locked In!</h2>
-            <p class="small muted">Waiting for everyone else—get ready to see what the AI paints from your prompt!</p>
-            ${imgHtml}
+            <p class="small muted">Waiting for everyone else—your AI image &amp; results gallery will appear right here automatically!</p>
+            <div id="phone-target-slot">${imgHtml}</div>
           </div>` : `
           <div class="card stack">
             <div class="row-between">
@@ -1089,7 +1158,7 @@ const App = (() => {
               <span class="xs muted" id="phone-sub-count">${(payload.submittedIds || []).length} locked in so far</span>
             </div>
             <h2 style="margin:0;">🔍 Recreate This Image!</h2>
-            ${imgHtml}
+            <div id="phone-target-slot">${imgHtml}</div>
             <p class="xs muted" style="margin:0;">💡 Hint: ${esc(payload.tips || 'Describe subjects, setting, props, colors, and art style!')}</p>
             <textarea class="textarea" id="p-clone-in" placeholder="Describe the subjects, setting, props, colors, weather, and art style...">${esc(cloneDraft)}</textarea>
             <div class="chip-wrap">
@@ -1097,6 +1166,43 @@ const App = (() => {
                 `<button type="button" class="chip" data-pchip="${c}">+ ${c}</button>`).join('')}
             </div>
             <button class="btn btn-primary btn-lg" id="p-clone-send">🔒 Lock In My Prompt!</button>
+          </div>`;
+      } else if (game === 'promptClone' && phase === 'grading') {
+        body = `
+          <div class="card center stack" style="padding:36px 18px;">
+            <div style="font-size:3rem;">🤖🎨</div>
+            <h2>AI is Generating Everyone's Images!</h2>
+            <p class="small muted" style="margin:0;">${esc(payload.gradingStatus || 'Painting every prompt and grading resemblance...')}</p>
+          </div>`;
+      } else if (game === 'promptClone' && phase === 'results') {
+        const map = cloneResultsByRound[payload.roundId];
+        const items = map ? Array.from(map.values()).sort((a, b) => a.rank - b.rank) : [];
+        const myItem = items.find(r => r.playerId === me.id);
+        const imgHtml = getPhoneCloneImageHtml(payload);
+        body = `
+          <div class="stack fade-in">
+            <div class="card-warm stack-sm">
+              <div class="row-between">
+                <strong>🎯 Original Target Image</strong>
+                <span class="tag tag-gold">${items.length}/${payload.totalResults || items.length} Results</span>
+              </div>
+              ${imgHtml}
+              ${payload.originalPrompt ? `<p class="xs muted" style="margin:0;">Secret prompt: <strong>"${esc(payload.originalPrompt)}"</strong></p>` : ''}
+            </div>
+
+            ${myItem ? `
+              <div class="stack-sm">
+                <strong class="small">✨ What AI Created From Your Prompt:</strong>
+                ${renderCloneResultCard(myItem, myItem.rank, true)}
+              </div>
+            ` : ''}
+
+            <div class="stack-sm">
+              <strong class="small">🏆 Full Family Results Gallery:</strong>
+              ${items.length
+                ? items.map(r => renderCloneResultCard(r, r.rank, r.playerId === me.id)).join('')
+                : `<div class="card center small muted">Loading everyone's AI creations...</div>`}
+            </div>
           </div>`;
       } else if (game === 'spotTheBot' && phase === 'submit') {
         body = botAlready ? `
@@ -1271,7 +1377,7 @@ const App = (() => {
 
     RoomSync.onMessage((msg) => {
       if (msg.type === 'JOIN' && msg.name) {
-        addPlayer({ id: msg.id || msg.playerId, name: msg.name, ageGroup: msg.ageGroup || 'adult', avatar: msg.avatar, remote: true });
+        addPlayer({ id: msg.playerId || msg.id, name: msg.name, ageGroup: msg.ageGroup || 'adult', avatar: msg.avatar, remote: true });
         SoundFX.ding();
         // Send current game state to the newly joined phone
         broadcastHostState(lastHostBroadcast.game, lastHostBroadcast.phase, lastHostBroadcast.payload);
@@ -1336,7 +1442,7 @@ const App = (() => {
 
   const publicApi = {
     getPlayers, addPlayer, removePlayer, addScore,
-    getStage, broadcastHostState, openQRModal, openGuideModal, openGame,
+    getStage, broadcastHostState, openQRModal, openGuideModal, openSettingsModal, openGame,
   };
 
   if (typeof document !== 'undefined') {
